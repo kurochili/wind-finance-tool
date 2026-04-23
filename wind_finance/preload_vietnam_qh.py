@@ -37,7 +37,7 @@ def get_all_projects() -> list[ProjectEntry]:
     total_per_kw = total_per_kw_cny / FX  # ~1972 USD/kW
 
     # 融资
-    equity_ratio = 0.20        # 注资比例20%
+    equity_ratio = 0.30        # 注资比例30%
     loan_rate = 0.055          # 基建贷款利率5.5%
     loan_term = 15
 
