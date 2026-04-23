@@ -64,7 +64,16 @@ st.set_page_config(
 
 # ── 密码保护 ──────────────────────────────────────────────────────────────
 # 密码来源优先级: HF Secrets > 环境变量 APP_PASSWORD > 不设密码（本地开发）
-_APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+def _get_secret(key, default=""):
+    val = os.environ.get(key, "")
+    if not val:
+        try:
+            val = st.secrets.get(key, default)
+        except Exception:
+            val = default
+    return val
+
+_APP_PASSWORD = _get_secret("APP_PASSWORD")
 
 if _APP_PASSWORD:
     if "authenticated" not in st.session_state:
@@ -157,8 +166,8 @@ def save_project(name: str, inputs: WindFarmFinancialInputs, result: Calculation
     return pid
 
 
-_DELETE_USER = "admin"
-_DELETE_PWD  = "mywind2026"
+_DELETE_USER = _get_secret("DELETE_USER", "admin")
+_DELETE_PWD  = _get_secret("DELETE_PWD")
 
 
 def delete_project(pid: str):
