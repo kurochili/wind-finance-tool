@@ -50,6 +50,7 @@ from wind_finance.reverse_solver import (
     solve_tariff_for_zero_npv,
     solve_turbine_price_for_target_lcoe,
 )
+from wind_finance import db as _db
 
 # ════════════════════════════════════════════════════════════════════════════
 # 页面配置 & 全局样式
@@ -115,12 +116,22 @@ COLOR_PALETTE = [
 ]
 
 # ════════════════════════════════════════════════════════════════════════════
-# Session State: 多项目存储
+# Supabase 初始化
 # ════════════════════════════════════════════════════════════════════════════
 
-if "projects" not in st.session_state:
-    st.session_state.projects: Dict[str, dict] = {}
-    # 首次启动：自动加载预置项目
+_sb_url = _get_secret("SUPABASE_URL")
+_sb_key = _get_secret("SUPABASE_KEY")
+if _sb_url and _sb_key:
+    _db.init(_sb_url, _sb_key)
+_USE_DB = _db.db_available()
+
+# ════════════════════════════════════════════════════════════════════════════
+# Session State: 多项目存储（优先从数据库加载）
+# ════════════════════════════════════════════════════════════════════════════
+
+def _preload_defaults() -> Dict[str, dict]:
+    """从内置脚本加载预置项目。"""
+    projects: Dict[str, dict] = {}
     _preloaders = [
         "wind_finance.preload_philippines",
         "wind_finance.preload_laguna",
@@ -132,10 +143,9 @@ if "projects" not in st.session_state:
             import importlib
             _mod = importlib.import_module(_mod_name)
             for entry in _mod.get_all_projects():
-                # 支持 5 元组 (name, group, country, inputs, result)
                 name, group, country, inputs, result = entry
                 pid = str(uuid.uuid4())[:8]
-                st.session_state.projects[pid] = {
+                projects[pid] = {
                     "name": name,
                     "group": group,
                     "country": country,
@@ -145,6 +155,29 @@ if "projects" not in st.session_state:
                 }
         except Exception:
             pass
+    return projects
+
+
+if "projects" not in st.session_state:
+    st.session_state.projects: Dict[str, dict] = {}
+    if _USE_DB:
+        try:
+            db_projects = _db.db_load_all()
+            if db_projects:
+                st.session_state.projects = db_projects
+            else:
+                defaults = _preload_defaults()
+                st.session_state.projects = defaults
+                for pid, proj in defaults.items():
+                    try:
+                        _db.db_save(pid, proj["name"], proj["group"],
+                                    proj["country"], proj["inputs"], proj["saved_at"])
+                    except Exception:
+                        pass
+        except Exception:
+            st.session_state.projects = _preload_defaults()
+    else:
+        st.session_state.projects = _preload_defaults()
 
 if "compare_ids" not in st.session_state:
     st.session_state.compare_ids: list[str] = []
@@ -155,14 +188,20 @@ def save_project(name: str, inputs: WindFarmFinancialInputs, result: Calculation
     pid = str(uuid.uuid4())[:8]
     _group = group or inputs.basic.project_name.split(" - ")[0].strip()
     _country = country or inputs.basic.country
+    saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
     st.session_state.projects[pid] = {
         "name": name,
         "group": _group,
         "country": _country,
         "inputs": copy.deepcopy(inputs),
         "result": copy.deepcopy(result),
-        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "saved_at": saved_at,
     }
+    if _USE_DB:
+        try:
+            _db.db_save(pid, name, _group, _country, inputs, saved_at)
+        except Exception:
+            pass
     return pid
 
 
@@ -175,6 +214,11 @@ def delete_project(pid: str):
     if pid in st.session_state.compare_ids:
         st.session_state.compare_ids.remove(pid)
     st.session_state.pop("confirm_delete", None)
+    if _USE_DB:
+        try:
+            _db.db_delete(pid)
+        except Exception:
+            pass
 
 
 # ════════════════════════════════════════════════════════════════════════════
