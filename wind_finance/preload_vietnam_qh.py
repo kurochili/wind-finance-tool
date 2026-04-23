@@ -97,7 +97,7 @@ def get_all_projects() -> list[ProjectEntry]:
     investment = InvestmentData(
         unit_static_investment=total_per_kw,
         working_capital_per_kw=36.0 / FX,  # 流动资金36元/kW
-        deductible_vat_ratio=0.0,
+        deductible_vat_ratio=0.0,             # 越南项目暂无进项税抵扣
     )
 
     # 建设期利息 = 64,680万元 = 64680/7.1 万USD
