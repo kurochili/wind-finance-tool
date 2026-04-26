@@ -171,6 +171,47 @@ def get_all_projects() -> list[ProjectEntry]:
 
     GROUP = "Vietnam QH Offshore"
     COUNTRY = "Vietnam"
-    display_name = "Vietnam-QH-800MW"
+    display_name = "Vietnam-QH-800MW (Owner)"
 
-    return [(display_name, GROUP, COUNTRY, inputs, result)]
+    # ── 方案2: 独立计算版 (MY 650 + EPC 1200 USD/kW) ──
+    basic2 = BasicInfo(
+        project_name="Vietnam QH 800MW - MY650+EPC1200",
+        project_type="offshore",
+        country="Vietnam",
+        num_turbines=num_turbines,
+        turbine_capacity_mw=turbine_mw,
+        full_load_hours=p90_hours,
+        loss_rate=0.0,
+        construction_months=construction_months,
+        investment_schedule=(0.4, 0.3, 0.3),
+    )
+
+    investment2 = InvestmentData(
+        unit_static_investment=650.0 + 1200.0,   # MY设备650 + EPC1200 = 1850 USD/kW
+        working_capital_per_kw=36.0 / FX,
+        deductible_vat_ratio=0.0,
+    )
+
+    financing2 = FinancingTerms(
+        equity_ratio=equity_ratio,
+        long_term_loan_rate=loan_rate,
+        loan_term_years=loan_term,
+        construction_interest_override=None,       # 不用业主数据，完全自算
+        working_capital_loan_rate=0.04,
+        working_capital_equity_ratio=0.70,
+    )
+
+    inputs2 = WindFarmFinancialInputs(
+        basic=basic2,
+        investment=investment2,
+        financing=financing2,
+        operational=operational,
+        tax_financial=tax,
+    )
+    result2 = calculate(inputs2)
+    display_name2 = "Vietnam-QH-800MW (MY650+EPC1200)"
+
+    return [
+        (display_name, GROUP, COUNTRY, inputs, result),
+        (display_name2, GROUP, COUNTRY, inputs2, result2),
+    ]
