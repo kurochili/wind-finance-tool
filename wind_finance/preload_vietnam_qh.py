@@ -17,7 +17,7 @@ from .models import (
 )
 from .calculator import calculate, CalculationResult
 
-FX = 7.1  # 1 USD = 7.1 CNY
+FX = 7.0  # 1 USD = 7.0 CNY (基于业主主机定价4550元/kW ÷ 650USD/kW 反推)
 
 ProjectEntry = tuple[str, str, str, WindFarmFinancialInputs, CalculationResult]
 
@@ -48,7 +48,7 @@ def get_all_projects() -> list[ProjectEntry]:
     welfare_rate = 0.90        # 福利费系数90%(越南1.5倍)
     material_per_kw = 36.0 / FX   # 材料费 36元/kW → USD
     other_per_kw = 60.0 / FX      # 其他费用 60元/kW → USD
-    insurance_rate = 0.003 * 1.2  # 0.3%×1.2倍=0.36%
+    insurance_rate = 0.0042  # 0.35%×1.2倍=0.42% (基于业主核实数据)
 
     # 修理费率(越南=国内×1.2)
     repair_rates = [
@@ -112,10 +112,14 @@ def get_all_projects() -> list[ProjectEntry]:
         working_capital_equity_ratio=0.70,
     )
 
+    # 质保期修理费: 业主方法=投产即计提0.6%修理费(0.5%×1.2)
+    # repair_per_kw = 0.006 × unit_static_per_kw
+    warranty_repair_per_kw = 0.006 * total_per_kw
+
     warranty = WarrantyPeriodCost(
         warranty_years=5,
         material_cost_per_kw=material_per_kw,
-        repair_cost_per_kw=0.0,
+        repair_cost_per_kw=warranty_repair_per_kw,
         other_cost_per_kw=other_per_kw,
     )
 
