@@ -138,6 +138,7 @@ def _preload_defaults() -> Dict[str, dict]:
         "wind_finance.preload_fsg",
         "wind_finance.preload_vietnam_qh",
         "wind_finance.preload_soctrang",
+        "wind_finance.preload_hatinh",
     ]
     for _mod_name in _preloaders:
         try:
