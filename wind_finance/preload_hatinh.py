@@ -38,7 +38,7 @@ def _build(v) -> tuple[WindFarmFinancialInputs, CalculationResult]:
         full_load_hours=v["p90_hrs"],
         loss_rate=0.0,
         construction_months=24,
-        investment_schedule=(0.3, 0.4, 0.3),
+        investment_schedule=(0.6, 0.4),
     )
     investment = InvestmentData(
         unit_static_investment=v["capex_per_kw"],
