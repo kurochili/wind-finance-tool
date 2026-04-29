@@ -12,7 +12,9 @@ from .models import (
 from .calculator import calculate, CalculationResult
 
 FX = 7.0
-TARIFF = 0.170
+FX_VND = 25700  # VND per USD
+TARIFF_VND_NOTAX = 1987.4  # Decision 1508/QĐ-BCT 近海风电 不含VAT
+TARIFF = TARIFF_VND_NOTAX * 1.10 / FX_VND  # 含税 USD/kWh ≈ 0.0851
 
 VARIANTS = [
     {"wtg": "MySE8.5-230", "units": 47, "mw": 8.5, "p90_hrs": 2070,
