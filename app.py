@@ -397,17 +397,19 @@ def smart_upload_panel():
             st.image(uploaded, caption="上传的截图", use_container_width=True)
             uploaded.seek(0)
             raw_bytes = uploaded.read()
-            variants = parse_image(raw_bytes)
-            if not variants:
-                st.warning("OCR 未能提取参数。建议改用 Excel 上传（更可靠）或手动输入。")
-            try:
-                import pytesseract
-                from PIL import Image
-                _ocr_text = pytesseract.image_to_string(
-                    Image.open(io.BytesIO(raw_bytes)), lang="eng+chi_sim"
-                )
-            except Exception:
-                _ocr_text = ""
+            result = parse_image(raw_bytes)
+            variants, _ocr_text, _ocr_err = result[0], result[1], result[2]
+            if _ocr_err:
+                st.error(f"图片识别失败：{_ocr_err}")
+                variants = []
+            elif not variants:
+                st.warning("OCR 识别了文字但未能解析出参数。")
+                with st.expander("🔍 查看 OCR 原始识别结果（调试用）", expanded=True):
+                    st.code(_ocr_text, language=None)
+                    st.caption("如果上方文字中能看到参数，说明是解析逻辑问题，请改用 Excel 上传或反馈给开发者。")
+            else:
+                with st.expander("🔍 查看 OCR 原始识别结果", expanded=False):
+                    st.code(_ocr_text, language=None)
             _detected = detect_country_from_image_text(_ocr_text, uploaded.name) if _HAS_SMART_INPUT else None
             if _detected:
                 st.session_state["_su_detected_country"] = _detected
