@@ -28,6 +28,7 @@ from wind_finance.country_profiles import (
     _PROFILES,
 )
 from wind_finance.excel_export import export_to_excel
+from wind_finance.smart_input import parse_excel, parse_image, extract_mw_from_name
 from wind_finance.models import (
     BOPCost,
     BasicInfo,
@@ -223,6 +224,161 @@ def delete_project(pid: str):
             _db.db_delete(pid)
         except Exception:
             pass
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 智能上传面板
+# ════════════════════════════════════════════════════════════════════════════
+
+def smart_upload_panel():
+    """上传 Excel 或图片，自动提取参数并批量计算多方案"""
+    st.markdown("### 📤 智能上传")
+    st.caption("上传含机型参数的 Excel 或截图，自动提取并计算")
+
+    upload_type = st.radio("文件类型", ["Excel (.xlsx)", "图片截图"], horizontal=True, key="su_type")
+
+    if upload_type.startswith("Excel"):
+        uploaded = st.file_uploader("上传 Excel 文件", type=["xlsx", "xls"], key="su_excel")
+        if uploaded:
+            variants = parse_excel(uploaded.read())
+        else:
+            variants = []
+    else:
+        uploaded = st.file_uploader("上传截图", type=["png", "jpg", "jpeg"], key="su_img")
+        if uploaded:
+            st.image(uploaded, caption="上传的截图", use_container_width=True)
+            uploaded.seek(0)
+            variants = parse_image(uploaded.read())
+            if not variants:
+                st.warning("OCR 未能提取参数。请尝试 Excel 上传或手动输入。")
+        else:
+            variants = []
+
+    if not variants:
+        st.info("请上传文件。支持的 Excel 格式：含 WTG Type / Units / P90 / TSI / BOP / CAPEX 列的表格。")
+        return None
+
+    st.success(f"成功提取 **{len(variants)}** 个方案")
+
+    countries = list_countries()
+    country_options = {f"{cn} ({en})": en for en, cn in countries}
+    col_c, col_t = st.columns(2)
+    with col_c:
+        sel_country = st.selectbox("国家", list(country_options.keys()), index=0, key="su_country")
+        country_name = country_options[sel_country]
+    with col_t:
+        project_type = st.selectbox("项目类型", ["Offshore", "Onshore"], index=0, key="su_ptype")
+    is_offshore = project_type == "Offshore"
+    profile = get_country_profile(country_name)
+
+    eq_ratio = profile.typical_equity_ratio if profile else 0.30
+    loan_rate = profile.typical_loan_rate if profile else 0.07
+    loan_term = profile.typical_loan_term if profile else 15
+    vat = profile.vat_rate if profile else 0.12
+    cit = profile.corporate_income_tax_rate if profile else 0.25
+    urban_tax = profile.urban_maintenance_tax_rate if profile else 0.0
+    edu_sur = profile.education_surcharge_rate if profile else 0.0
+
+    with st.expander("⚙️ 公共参数调整", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        tariff_override = col1.number_input("电价(含税 USD/kWh)", 0.001, 0.500, 0.085, step=0.001, format="%.4f", key="su_tariff")
+        build_months = col2.number_input("建设期(月)", 6, 48, 24, key="su_build")
+        oper_years = col3.number_input("运营期(年)", 15, 30, 25, key="su_oper")
+        col4, col5, col6 = st.columns(3)
+        eq_ratio = col4.number_input("资本金比例", 0.10, 0.80, eq_ratio, step=0.05, key="su_eq")
+        loan_rate = col5.number_input("贷款利率", 0.01, 0.20, loan_rate, step=0.005, format="%.3f", key="su_lr")
+        loan_term = col6.number_input("贷款期限(年)", 5, 25, loan_term, key="su_lt")
+
+    if profile and profile.has_wind_tax_incentive:
+        tax_holiday = profile.income_tax_holiday
+    else:
+        tax_holiday = (1, 3, 0.0, 4, 6, cit / 2.0)
+
+    st.markdown("---")
+    st.markdown("### 📊 提取的方案参数")
+
+    param_rows = []
+    for v in variants:
+        param_rows.append({
+            "机型": v.get("wtg_type", "—"),
+            "台数": v.get("units", "—"),
+            "MW": v.get("turbine_mw", "—"),
+            "P90(h)": v.get("p90_hours", "—"),
+            "TSI($/kW)": v.get("tsi_per_kw", "—"),
+            "BOP($/kW)": v.get("bop_per_kw", "—"),
+            "CAPEX($/kW)": v.get("capex_per_kw", "—"),
+        })
+    st.dataframe(pd.DataFrame(param_rows), use_container_width=True, hide_index=True)
+
+    if st.button("🚀 计算全部方案", type="primary", key="su_calc"):
+        all_results = []
+        for v in variants:
+            wtg = v.get("wtg_type", "Variant")
+            units = int(v.get("units", 40))
+            mw = float(v.get("turbine_mw", 10.0))
+            p90 = int(v.get("p90_hours", 2500))
+            tariff = float(v.get("tariff_usd", tariff_override) or tariff_override)
+            tsi = float(v.get("tsi_per_kw", 600))
+            bop = float(v.get("bop_per_kw", 800))
+            capex = float(v.get("capex_per_kw", tsi + bop))
+
+            basic = BasicInfo(
+                project_name=f"Smart - {wtg}", project_type="offshore" if is_offshore else "onshore",
+                country=country_name, num_turbines=units, turbine_capacity_mw=mw,
+                full_load_hours=p90, loss_rate=0.0, construction_months=build_months,
+            )
+            investment = InvestmentData(unit_static_investment=capex, working_capital_per_kw=4.0, deductible_vat_ratio=0.0)
+            financing = FinancingTerms(
+                equity_ratio=eq_ratio, long_term_loan_rate=loan_rate, loan_term_years=loan_term,
+                working_capital_loan_rate=loan_rate, working_capital_equity_ratio=eq_ratio,
+            )
+            warranty = WarrantyPeriodCost(warranty_years=5, material_cost_per_kw=5.0, repair_cost_per_kw=0.0, other_cost_per_kw=8.0)
+            post_warranty = PostWarrantyPeriodCost(
+                includes_major_components=True, material_cost_per_kw=6.0, other_cost_per_kw=10.0,
+                maintenance_rates=[(1,5,0.005),(6,10,0.01),(11,15,0.015),(16,20,0.02),(21,25,0.025)],
+            )
+            offshore_extra = OffshoreExtraCost(requires_sov=False, sea_area_usage_fee=43.0) if is_offshore else None
+            operational = OperationalCost(
+                staff_count=35 if is_offshore else 15, salary_per_person=3.5 if is_offshore else 1.0,
+                welfare_rate=0.40, insurance_rate=0.0035, depreciation_years=20, residual_rate=0.0,
+                operation_years=oper_years, warranty=warranty, post_warranty=post_warranty,
+                offshore_extra=offshore_extra,
+            )
+            tax_financial = TaxAndFinancial(
+                tariff_with_tax=tariff, vat_rate=vat, vat_refund_rate=0.0,
+                income_tax_rate=cit, income_tax_holiday=tax_holiday,
+                urban_maintenance_tax_rate=urban_tax, education_surcharge_rate=edu_sur,
+                discount_rate=0.08,
+            )
+            inp = WindFarmFinancialInputs(basic=basic, investment=investment, financing=financing,
+                                          operational=operational, tax_financial=tax_financial)
+            res = calculate(inp)
+            all_results.append((wtg, v, inp, res))
+
+            pid = save_project(f"Smart - {wtg}", inp, res)
+
+        st.success(f"已计算并保存 {len(all_results)} 个方案！")
+
+        result_rows = []
+        for wtg, v, inp, res in all_results:
+            cap = int(v.get("units", 40)) * float(v.get("turbine_mw", 10))
+            result_rows.append({
+                "机型": wtg,
+                "容量(MW)": f"{cap:.0f}",
+                "CAPEX($/kW)": v.get("capex_per_kw", "—"),
+                "全投IRR税前": f"{res.project_irr_before_tax*100:.2f}%",
+                "全投IRR税后": f"{res.project_irr_after_tax*100:.2f}%",
+                "资本金IRR": f"{res.equity_irr*100:.2f}%",
+                "LCOE($/kWh)": f"{res.lcoe:.5f}",
+                "NPV税后(M$)": f"{res.project_npv_after_tax/1e6:.1f}",
+                "回收期(年)": f"{res.payback_after_tax:.1f}",
+            })
+        st.markdown("### 📈 计算结果对比")
+        st.dataframe(pd.DataFrame(result_rows), use_container_width=True, hide_index=True)
+
+        st.info("方案已自动保存。可切换到「项目对比」标签页查看详细对比图表，或导出对比 PPT。")
+
+    return None
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1000,6 +1156,303 @@ def generate_ppt_bytes(inputs: WindFarmFinancialInputs, result: CalculationResul
     return buf.getvalue()
 
 
+def generate_comparison_ppt_bytes(
+    inputs1: WindFarmFinancialInputs, result1: CalculationResult,
+    inputs2: WindFarmFinancialInputs, result2: CalculationResult,
+) -> bytes:
+    """生成两项目对比 PPT，返回二进制内容"""
+    from io import BytesIO
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+    from pptx.enum.shapes import MSO_SHAPE
+
+    WHITE   = RGBColor(0xFF, 0xFF, 0xFF)
+    BLACK   = RGBColor(0x33, 0x33, 0x33)
+    DARK    = RGBColor(0x1B, 0x2A, 0x4A)
+    BLUE    = RGBColor(0x00, 0x6E, 0xB8)
+    LBLUE   = RGBColor(0xD6, 0xEA, 0xF8)
+    GREEN   = RGBColor(0x27, 0xAE, 0x60)
+    LGREEN  = RGBColor(0xE8, 0xF8, 0xE8)
+    GRAY    = RGBColor(0x7F, 0x8C, 0x8D)
+    LGRAY   = RGBColor(0xF5, 0xF5, 0xF5)
+    ORANGE  = RGBColor(0xE6, 0x7E, 0x22)
+    RED_HL  = RGBColor(0xE7, 0x4C, 0x3C)
+    GOLD    = RGBColor(0xF5, 0xEE, 0xD5)
+
+    SLIDE_W = Inches(13.33)
+    SLIDE_H = Inches(7.5)
+    prs = Presentation()
+    prs.slide_width = SLIDE_W
+    prs.slide_height = SLIDE_H
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = WHITE
+
+    def _rect(l, t, w, h, fc=None):
+        s = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, l, t, w, h)
+        s.line.fill.background()
+        if fc:
+            s.fill.solid()
+            s.fill.fore_color.rgb = fc
+        return s
+
+    def _txt(l, t, w, h, text, sz=12, c=BLACK, b=False, al=PP_ALIGN.LEFT):
+        tx = slide.shapes.add_textbox(l, t, w, h)
+        tf = tx.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.text = str(text)
+        p.font.size = Pt(sz)
+        p.font.color.rgb = c
+        p.font.bold = b
+        p.font.name = "Microsoft YaHei"
+        p.alignment = al
+
+    def _cell(tbl, r, c, text, sz=9, color=BLACK, bold=False,
+              al=PP_ALIGN.CENTER, fc=None):
+        cl = tbl.cell(r, c)
+        cl.text = ""
+        p = cl.text_frame.paragraphs[0]
+        run = p.add_run()
+        run.text = str(text)
+        run.font.size = Pt(sz)
+        run.font.color.rgb = color
+        run.font.bold = bold
+        run.font.name = "Microsoft YaHei"
+        p.alignment = al
+        cl.vertical_anchor = MSO_ANCHOR.MIDDLE
+        if fc:
+            cl.fill.solid()
+            cl.fill.fore_color.rgb = fc
+
+    name1 = inputs1.basic.project_name
+    name2 = inputs2.basic.project_name
+    type1_cn = "海上" if inputs1.basic.project_type == "offshore" else "陆上"
+    type2_cn = "海上" if inputs2.basic.project_type == "offshore" else "陆上"
+
+    # ── 标题栏 ──
+    _rect(Inches(0), Inches(0), SLIDE_W, Inches(0.9), fc=DARK)
+    _txt(Inches(0.5), Inches(0.1), Inches(9), Inches(0.45),
+         f"{name1} vs {name2}", sz=22, c=WHITE, b=True)
+    _txt(Inches(0.5), Inches(0.5), Inches(10), Inches(0.35),
+         f"{type1_cn} vs {type2_cn} · 经济性对比 · "
+         f"P90发电量 · {inputs1.operational.operation_years}年运营",
+         sz=11, c=RGBColor(0xAA, 0xCC, 0xEE))
+
+    # ── Logo ──
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mingyang_logo.png")
+    if os.path.exists(logo_path):
+        slide.shapes.add_picture(logo_path, Inches(11.3), Inches(0.1), height=Inches(0.7))
+
+    # ── 左侧: 项目概况 ──
+    Y0 = Inches(1.05)
+    _rect(Inches(0.3), Y0, Inches(0.12), Inches(0.32), fc=BLUE)
+    _txt(Inches(0.55), Y0, Inches(3), Inches(0.32), "项目概况", sz=14, c=DARK, b=True)
+
+    tariff1 = inputs1.tax_financial.tariff_with_tax
+    tariff2 = inputs2.tax_financial.tariff_with_tax
+    tariff1_notax = inputs1.tax_financial.tariff_without_tax
+    tariff2_notax = inputs2.tax_financial.tariff_without_tax
+
+    info_items = [
+        ("方案A", name1),
+        ("方案B", name2),
+        ("装机容量A", f"{inputs1.basic.num_turbines}台×{inputs1.basic.turbine_capacity_mw}MW = {inputs1.capacity_mw:.0f}MW"),
+        ("装机容量B", f"{inputs2.basic.num_turbines}台×{inputs2.basic.turbine_capacity_mw}MW = {inputs2.capacity_mw:.0f}MW"),
+        ("电价A(含税)", f"{tariff1:.5f} USD/kWh"),
+        ("电价B(含税)", f"{tariff2:.5f} USD/kWh"),
+        ("建设/运营", f"{inputs1.basic.construction_months}个月 / {inputs1.operational.operation_years}年"),
+        ("融资结构", f"资本金{inputs1.financing.equity_ratio:.0%} | 利率{inputs1.financing.long_term_loan_rate:.2%}"),
+    ]
+
+    y = Y0 + Inches(0.4)
+    for lb, vl in info_items:
+        _txt(Inches(0.55), y, Inches(1.6), Inches(0.25), lb + ":", sz=9, c=GRAY, b=True)
+        _txt(Inches(2.15), y, Inches(3.8), Inches(0.25), vl, sz=9, c=BLACK)
+        y += Inches(0.25)
+
+    # ── 左侧: 投资造价对比表 ──
+    y += Inches(0.15)
+    _rect(Inches(0.3), y, Inches(0.12), Inches(0.32), fc=GREEN)
+    _txt(Inches(0.55), y, Inches(3), Inches(0.32), "投资造价对比", sz=14, c=DARK, b=True)
+    y += Inches(0.42)
+
+    cap1 = inputs1.capacity_mw
+    cap2 = inputs2.capacity_mw
+    unit_inv1 = inputs1.investment.resolve_unit_investment()
+    unit_inv2 = inputs2.investment.resolve_unit_investment()
+    total_inv1 = inputs1.total_investment / 1e6
+    total_inv2 = inputs2.total_investment / 1e6
+
+    inv_rows = [
+        ("配置",
+         f"{inputs1.basic.num_turbines}台×{inputs1.basic.turbine_capacity_mw}MW\n={cap1:.0f}MW",
+         f"{inputs2.basic.num_turbines}台×{inputs2.basic.turbine_capacity_mw}MW\n={cap2:.0f}MW"),
+        ("CAPEX (USD/kW)", f"{unit_inv1:,.0f}", f"{unit_inv2:,.0f}"),
+        ("总投资 (M USD)", f"{total_inv1:,.1f}", f"{total_inv2:,.1f}"),
+    ]
+
+    num_inv = len(inv_rows)
+    t1 = slide.shapes.add_table(
+        num_inv + 1, 3, Inches(0.4), y,
+        Inches(5.5), Inches(num_inv * 0.32 + 0.32)).table
+    t1.columns[0].width = Inches(2.0)
+    t1.columns[1].width = Inches(1.75)
+    t1.columns[2].width = Inches(1.75)
+
+    _cell(t1, 0, 0, "项目", fc=DARK, color=WHITE, bold=True, sz=9)
+    _cell(t1, 0, 1, name1, fc=DARK, color=WHITE, bold=True, sz=9)
+    _cell(t1, 0, 2, name2, fc=DARK, color=WHITE, bold=True, sz=9)
+
+    for r, (lb, v1, v2) in enumerate(inv_rows):
+        bg = LGRAY if r % 2 == 0 else None
+        is_hl = r == num_inv - 1
+        _cell(t1, r + 1, 0, lb, sz=8, bold=True, al=PP_ALIGN.LEFT, fc=bg)
+        for c_idx, v in enumerate([v1, v2]):
+            fc_ = LGREEN if is_hl else bg
+            _cell(t1, r + 1, c_idx + 1, v, sz=8, fc=fc_, bold=is_hl)
+
+    # ── 右侧: 财务指标对比 ──
+    RX = Inches(6.3)
+    _rect(RX - Inches(0.1), Y0, Inches(0.12), Inches(0.32), fc=ORANGE)
+    _txt(RX + Inches(0.15), Y0, Inches(5), Inches(0.32),
+         "财务指标对比 (P90)", sz=14, c=DARK, b=True)
+
+    irr_pre_1 = result1.project_irr_before_tax * 100
+    irr_pre_2 = result2.project_irr_before_tax * 100
+    irr_post_1 = result1.project_irr_after_tax * 100
+    irr_post_2 = result2.project_irr_after_tax * 100
+    eq_irr_1 = result1.equity_irr * 100
+    eq_irr_2 = result2.equity_irr * 100
+    lcoe_usd_1 = result1.lcoe
+    lcoe_usd_2 = result2.lcoe
+    lcoe_cny_1 = result1.lcoe * 7.1
+    lcoe_cny_2 = result2.lcoe * 7.1
+    pb_1 = result1.payback_after_tax
+    pb_2 = result2.payback_after_tax
+    npv_1 = result1.project_npv_after_tax / 1e6
+    npv_2 = result2.project_npv_after_tax / 1e6
+
+    # higher_is_better: True = higher is better; False = lower is better
+    fin_data = [
+        ("P90等效小时 (h)", f"{inputs1.basic.full_load_hours:,}", f"{inputs2.basic.full_load_hours:,}",
+         None, False, True),
+        ("发电量 (MWh/年)", f"{inputs1.net_annual_generation_mwh:,.0f}", f"{inputs2.net_annual_generation_mwh:,.0f}",
+         None, False, True),
+        ("全投IRR 税前", f"{irr_pre_1:.2f}%", f"{irr_pre_2:.2f}%",
+         LBLUE, True, True),
+        ("全投IRR 税后", f"{irr_post_1:.2f}%", f"{irr_post_2:.2f}%",
+         LBLUE, True, True),
+        ("资本金IRR", f"{eq_irr_1:.2f}%", f"{eq_irr_2:.2f}%",
+         LGREEN, True, True),
+        ("LCOE (USD/kWh)", f"{lcoe_usd_1:.5f}", f"{lcoe_usd_2:.5f}",
+         None, False, False),
+        ("LCOE (元/kWh)", f"{lcoe_cny_1:.4f}", f"{lcoe_cny_2:.4f}",
+         None, False, False),
+        ("回收期 税后 (年)", f"{pb_1:.2f}", f"{pb_2:.2f}",
+         None, False, False),
+        ("NPV 税后 (M USD)", f"{npv_1:.1f}", f"{npv_2:.1f}",
+         LGREEN, True, True),
+    ]
+
+    raw_vals = [
+        (inputs1.basic.full_load_hours, inputs2.basic.full_load_hours),
+        (inputs1.net_annual_generation_mwh, inputs2.net_annual_generation_mwh),
+        (irr_pre_1, irr_pre_2),
+        (irr_post_1, irr_post_2),
+        (eq_irr_1, eq_irr_2),
+        (lcoe_usd_1, lcoe_usd_2),
+        (lcoe_cny_1, lcoe_cny_2),
+        (pb_1, pb_2),
+        (npv_1, npv_2),
+    ]
+
+    best_map = {}
+    for idx, (_, _, _, _, is_key, higher_better) in enumerate(fin_data):
+        v_a, v_b = raw_vals[idx]
+        if higher_better:
+            best_map[idx] = 0 if v_a > v_b else (1 if v_b > v_a else -1)
+        else:
+            best_map[idx] = 0 if v_a < v_b else (1 if v_b < v_a else -1)
+
+    y_t2 = Y0 + Inches(0.45)
+    t2 = slide.shapes.add_table(
+        len(fin_data) + 1, 3, RX - Inches(0.1), y_t2,
+        Inches(6.9), Inches(3.6)).table
+    t2.columns[0].width = Inches(2.2)
+    t2.columns[1].width = Inches(2.35)
+    t2.columns[2].width = Inches(2.35)
+
+    _cell(t2, 0, 0, "指标", fc=DARK, color=WHITE, bold=True, sz=9)
+    _cell(t2, 0, 1, name1, fc=DARK, color=WHITE, bold=True, sz=9)
+    _cell(t2, 0, 2, name2, fc=DARK, color=WHITE, bold=True, sz=9)
+
+    for r, (lb, v1, v2, bg, is_key, _hb) in enumerate(fin_data):
+        _cell(t2, r + 1, 0, lb, sz=9, bold=True, al=PP_ALIGN.LEFT, fc=LGRAY)
+        for c_idx, v in enumerate([v1, v2]):
+            is_best = best_map.get(r, -1) == c_idx
+            fc_ = bg if bg else None
+            cl = RED_HL if is_best and is_key else BLACK
+            b_ = is_key
+            extra = " (NO.1)" if is_best and is_key else ""
+            _cell(t2, r + 1, c_idx + 1, v + extra, sz=9, bold=b_, color=cl, fc=fc_)
+
+    # ── 关键结论 ──
+    y_f = y_t2 + Inches(3.8)
+    _rect(RX - Inches(0.1), y_f, Inches(0.12), Inches(0.32), fc=RED_HL)
+    _txt(RX + Inches(0.15), y_f, Inches(3), Inches(0.32), "关键结论", sz=14, c=DARK, b=True)
+
+    better_name = name1 if irr_pre_1 > irr_pre_2 else name2
+    worse_name = name2 if irr_pre_1 > irr_pre_2 else name1
+    better_r = result1 if irr_pre_1 > irr_pre_2 else result2
+    worse_r = result2 if irr_pre_1 > irr_pre_2 else result1
+    better_inp = inputs1 if irr_pre_1 > irr_pre_2 else inputs2
+
+    findings = [
+        f"▸ 两方案全投IRR(税前): {min(irr_pre_1, irr_pre_2):.2f}% ~ {max(irr_pre_1, irr_pre_2):.2f}%",
+        f"▸ {better_name}综合更优: IRR {better_r.project_irr_before_tax * 100:.2f}%, "
+        f"LCOE {better_r.lcoe:.5f}$/kWh, 资本金IRR {better_r.equity_irr * 100:.2f}%",
+        f"▸ {worse_name}: IRR {worse_r.project_irr_before_tax * 100:.2f}%, "
+        f"LCOE {worse_r.lcoe:.5f}$/kWh",
+        f"▸ LCOE差异: {abs(lcoe_usd_1 - lcoe_usd_2):.5f} USD/kWh "
+        f"({abs(lcoe_cny_1 - lcoe_cny_2):.4f} 元/kWh)",
+        f"▸ NPV差异: {abs(npv_1 - npv_2):.1f} M USD",
+    ]
+
+    yy = y_f + Inches(0.38)
+    for f_line in findings:
+        _txt(RX, yy, Inches(6.8), Inches(0.26), f_line, sz=10, c=BLACK)
+        yy += Inches(0.28)
+
+    # ── 底部: 数据来源 & 假设 ──
+    y_bot = Inches(6.55)
+    _rect(Inches(0), y_bot, SLIDE_W, Inches(0.95), fc=RGBColor(0xF0, 0xF4, 0xF8))
+    _txt(Inches(0.5), y_bot + Inches(0.08), Inches(12), Inches(0.22),
+         "数据来源 & 假设", sz=8, c=GRAY, b=True)
+    _txt(Inches(0.5), y_bot + Inches(0.3), Inches(12), Inches(0.22),
+         f"方案A电价: {tariff1:.5f} USD/kWh(含税) | P90: {inputs1.basic.full_load_hours}h | "
+         f"方案B电价: {tariff2:.5f} USD/kWh(含税) | P90: {inputs2.basic.full_load_hours}h",
+         sz=8, c=BLACK)
+    _txt(Inches(0.5), y_bot + Inches(0.52), Inches(12), Inches(0.22),
+         f"折旧{inputs1.operational.depreciation_years}年 | "
+         f"所得税{inputs1.tax_financial.income_tax_rate:.0%} | "
+         f"增值税{inputs1.tax_financial.vat_rate:.0%} | "
+         f"折现率{inputs1.tax_financial.discount_rate:.1%}",
+         sz=8, c=GRAY)
+    _txt(Inches(0.5), y_bot + Inches(0.72), Inches(12), Inches(0.22),
+         f"资本金{inputs1.financing.equity_ratio:.0%} | "
+         f"贷款利率{inputs1.financing.long_term_loan_rate:.2%} | "
+         f"贷款期限{inputs1.financing.loan_term_years}年 | "
+         f"运营期{inputs1.operational.operation_years}年",
+         sz=8, c=GRAY)
+
+    buf = BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
 def render_full_assessment(inputs: WindFarmFinancialInputs, result: CalculationResult, key_prefix: str = "main"):
     """
     渲染完整的项目评估视图（KPI + 参数 + 图表 + 明细表）。
@@ -1574,6 +2027,22 @@ def comparison_page():
         st.info("请至少选择 2 个项目。")
         return
 
+    # ──── 对比 PPT 下载（恰好 2 个项目时显示）────
+    if len(selected) == 2:
+        p1 = projects[selected[0]]
+        p2 = projects[selected[1]]
+        ppt_bytes = generate_comparison_ppt_bytes(
+            p1["inputs"], p1["result"],
+            p2["inputs"], p2["result"],
+        )
+        fname = f"{p1['name']}_vs_{p2['name']}_对比.pptx"
+        st.download_button(
+            "📥 下载对比 PPT", data=ppt_bytes,
+            file_name=fname,
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            key="dl_comparison_ppt",
+        )
+
     # ──── KPI 对比表 ────
     st.markdown("### 关键指标对比")
     rows = []
@@ -1967,33 +2436,37 @@ def main():
     with page[0]:
         # 模式切换
         input_mode = st.sidebar.radio(
-            "Input Mode", ["Quick (10 params)", "Detailed (full)"],
+            "Input Mode", ["Quick (10 params)", "Detailed (full)", "📤 Smart Upload"],
             horizontal=True, key="input_mode",
-            help="Quick: only TSI/BOP/P90/tariff needed. Detailed: edit all sub-items.",
+            help="Quick: 10 params. Detailed: full edit. Smart Upload: Excel/image auto-extract.",
         )
         st.sidebar.markdown("---")
 
-        if input_mode.startswith("Quick"):
+        if input_mode.startswith("📤"):
+            smart_upload_panel()
+            inputs = None
+        elif input_mode.startswith("Quick"):
             inputs = sidebar_inputs_quick()
         else:
             inputs = sidebar_inputs()
-        result = calculate(inputs)
 
-        # 保存按钮
-        col_save, col_info = st.columns([1, 3])
-        with col_save:
-            if st.button("💾 保存当前项目", type="primary"):
-                pid = save_project(inputs.basic.project_name, inputs, result)
-                st.success(f"项目已保存! (ID: {pid})")
-        with col_info:
-            st.caption(f"当前已保存 {len(st.session_state.projects)} 个项目")
+        if inputs is not None:
+            result = calculate(inputs)
 
-        st.markdown("---")
-        render_full_assessment(inputs, result, key_prefix="main")
+            col_save, col_info = st.columns([1, 3])
+            with col_save:
+                if st.button("💾 保存当前项目", type="primary"):
+                    pid = save_project(inputs.basic.project_name, inputs, result)
+                    st.success(f"项目已保存! (ID: {pid})")
+            with col_info:
+                st.caption(f"当前已保存 {len(st.session_state.projects)} 个项目")
 
-        st.markdown("---")
-        st.markdown("### 🔄 反算工具")
-        reverse_calc_panel(inputs)
+            st.markdown("---")
+            render_full_assessment(inputs, result, key_prefix="main")
+
+            st.markdown("---")
+            st.markdown("### 🔄 反算工具")
+            reverse_calc_panel(inputs)
 
     # ═══════════════════════════════════════════════════════
     # Tab 2: 项目对比
