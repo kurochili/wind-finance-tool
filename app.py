@@ -2534,7 +2534,8 @@ def main():
     _my_logo = os.path.join(_logo_dir, "mingyang_logo.png")
     _cat_logo = os.path.join(_logo_dir, "author_cat_logo.png")
 
-    # 明阳 logo 放侧边栏顶部，不会被主区域顶栏遮挡
+    # 明阳 logo — 加顶部留白避开 Streamlit 顶栏遮挡
+    st.sidebar.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
     if os.path.exists(_my_logo):
         st.sidebar.image(_my_logo, width=180)
         st.sidebar.caption("Powered by **MINGYANG**")
@@ -2547,10 +2548,10 @@ def main():
     _sb_cols = st.sidebar.columns([1, 3])
     with _sb_cols[0]:
         if os.path.exists(_cat_logo):
-            st.image(_cat_logo, width=52)
+            st.image(_cat_logo, width=68)
     with _sb_cols[1]:
         st.markdown(
-            "<span style='color:#888;line-height:1.4;font-size:0.85rem'>"
+            "<span style='color:#888;line-height:1.4;font-size:0.9rem'>"
             "<b>MingYang Wind Tool</b><br>"
             "Built by kurochilli</span>",
             unsafe_allow_html=True,
