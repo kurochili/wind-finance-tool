@@ -28,7 +28,11 @@ from wind_finance.country_profiles import (
     _PROFILES,
 )
 from wind_finance.excel_export import export_to_excel
-from wind_finance.smart_input import parse_excel, parse_image, extract_mw_from_name
+try:
+    from wind_finance.smart_input import parse_excel, parse_image, extract_mw_from_name
+    _HAS_SMART_INPUT = True
+except ImportError:
+    _HAS_SMART_INPUT = False
 from wind_finance.models import (
     BOPCost,
     BasicInfo,
@@ -234,6 +238,10 @@ def smart_upload_panel():
     """上传 Excel 或图片，自动提取参数并批量计算多方案"""
     st.markdown("### 📤 智能上传")
     st.caption("上传含机型参数的 Excel 或截图，自动提取并计算")
+
+    if not _HAS_SMART_INPUT:
+        st.error("智能输入模块尚未加载，请刷新页面重试。")
+        return None
 
     upload_type = st.radio("文件类型", ["Excel (.xlsx)", "图片截图"], horizontal=True, key="su_type")
 
