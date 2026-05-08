@@ -805,6 +805,201 @@ def plot_sensitivity(inputs: WindFarmFinancialInputs):
     st.plotly_chart(fig, use_container_width=True)
 
 
+def generate_ppt_bytes(inputs: WindFarmFinancialInputs, result: CalculationResult) -> bytes:
+    """生成单项目经济性评估 PPT，返回二进制内容"""
+    from io import BytesIO
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+    from pptx.enum.shapes import MSO_SHAPE
+
+    WHITE   = RGBColor(0xFF, 0xFF, 0xFF)
+    BLACK   = RGBColor(0x33, 0x33, 0x33)
+    DARK    = RGBColor(0x1B, 0x2A, 0x4A)
+    BLUE    = RGBColor(0x00, 0x6E, 0xB8)
+    LBLUE   = RGBColor(0xD6, 0xEA, 0xF8)
+    GREEN   = RGBColor(0x27, 0xAE, 0x60)
+    LGREEN  = RGBColor(0xE8, 0xF8, 0xE8)
+    GRAY    = RGBColor(0x7F, 0x8C, 0x8D)
+    LGRAY   = RGBColor(0xF5, 0xF5, 0xF5)
+    ORANGE  = RGBColor(0xE6, 0x7E, 0x22)
+    RED_HL  = RGBColor(0xE7, 0x4C, 0x3C)
+
+    SLIDE_W = Inches(13.33)
+    SLIDE_H = Inches(7.5)
+    prs = Presentation()
+    prs.slide_width = SLIDE_W
+    prs.slide_height = SLIDE_H
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = WHITE
+
+    def _rect(l, t, w, h, fc=None):
+        s = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, l, t, w, h)
+        s.line.fill.background()
+        if fc:
+            s.fill.solid()
+            s.fill.fore_color.rgb = fc
+        return s
+
+    def _txt(l, t, w, h, text, sz=12, c=BLACK, b=False, al=PP_ALIGN.LEFT):
+        tx = slide.shapes.add_textbox(l, t, w, h)
+        tf = tx.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.text = str(text)
+        p.font.size = Pt(sz)
+        p.font.color.rgb = c
+        p.font.bold = b
+        p.font.name = "Microsoft YaHei"
+        p.alignment = al
+
+    def _cell(tbl, r, c, text, sz=9, color=BLACK, bold=False,
+              al=PP_ALIGN.CENTER, fc=None):
+        cl = tbl.cell(r, c)
+        cl.text = ""
+        p = cl.text_frame.paragraphs[0]
+        run = p.add_run()
+        run.text = str(text)
+        run.font.size = Pt(sz)
+        run.font.color.rgb = color
+        run.font.bold = bold
+        run.font.name = "Microsoft YaHei"
+        p.alignment = al
+        cl.vertical_anchor = MSO_ANCHOR.MIDDLE
+        if fc:
+            cl.fill.solid()
+            cl.fill.fore_color.rgb = fc
+
+    project_type_cn = "海上" if inputs.basic.project_type == "offshore" else "陆上"
+
+    # ── 标题栏 ──
+    _rect(Inches(0), Inches(0), SLIDE_W, Inches(0.9), fc=DARK)
+    _txt(Inches(0.5), Inches(0.1), Inches(9), Inches(0.45),
+         f"{inputs.basic.project_name} 经济性评估", sz=22, c=WHITE, b=True)
+    _txt(Inches(0.5), Inches(0.5), Inches(10), Inches(0.35),
+         f"{inputs.basic.country} · {project_type_cn}风电 · "
+         f"{inputs.basic.num_turbines}×{inputs.basic.turbine_capacity_mw}MW = "
+         f"{inputs.capacity_mw:.0f}MW · {inputs.operational.operation_years}年运营",
+         sz=11, c=RGBColor(0xAA, 0xCC, 0xEE))
+
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mingyang_logo.png")
+    if os.path.exists(logo_path):
+        slide.shapes.add_picture(logo_path, Inches(11.3), Inches(0.1), height=Inches(0.7))
+
+    # ── 左侧: 项目概况 ──
+    Y0 = Inches(1.05)
+    _rect(Inches(0.3), Y0, Inches(0.12), Inches(0.32), fc=BLUE)
+    _txt(Inches(0.55), Y0, Inches(3), Inches(0.32), "项目概况", sz=14, c=DARK, b=True)
+
+    tariff_usd = inputs.tax_financial.tariff_with_tax
+    tariff_notax = inputs.tax_financial.tariff_without_tax
+
+    info_items = [
+        ("项目名称", inputs.basic.project_name),
+        ("项目类型", f"{project_type_cn}风电 ({inputs.basic.project_type})"),
+        ("国家/地区", inputs.basic.country),
+        ("装机容量", f"{inputs.basic.num_turbines}台×{inputs.basic.turbine_capacity_mw}MW = {inputs.capacity_mw:.0f}MW"),
+        ("P90小时数", f"{inputs.basic.full_load_hours} h"),
+        ("电价(含税)", f"{tariff_usd:.5f} USD/kWh"),
+        ("电价(不含税)", f"{tariff_notax:.5f} USD/kWh"),
+        ("建设/运营", f"{inputs.basic.construction_months}个月 / {inputs.operational.operation_years}年"),
+        ("融资结构", f"资本金{inputs.financing.equity_ratio:.0%} | 利率{inputs.financing.long_term_loan_rate:.2%} | {inputs.financing.loan_term_years}年"),
+        ("所得税", f"{inputs.tax_financial.income_tax_rate:.0%}"),
+    ]
+
+    y = Y0 + Inches(0.4)
+    for lb, vl in info_items:
+        _txt(Inches(0.55), y, Inches(1.6), Inches(0.25), lb + ":", sz=9, c=GRAY, b=True)
+        _txt(Inches(2.15), y, Inches(3.8), Inches(0.25), vl, sz=9, c=BLACK)
+        y += Inches(0.25)
+
+    # ── 左侧: 投资造价 ──
+    y += Inches(0.15)
+    _rect(Inches(0.3), y, Inches(0.12), Inches(0.32), fc=GREEN)
+    _txt(Inches(0.55), y, Inches(3), Inches(0.32), "投资造价", sz=14, c=DARK, b=True)
+    y += Inches(0.42)
+
+    inv_items = [
+        ("单位千瓦投资", f"{inputs.investment.resolve_unit_investment():,.0f} USD/kW"),
+        ("静态总投资", f"{inputs.total_static_investment / 1e6:,.1f} M USD"),
+        ("动态总投资", f"{inputs.total_dynamic_investment / 1e6:,.1f} M USD"),
+        ("项目总投资", f"{inputs.total_investment / 1e6:,.1f} M USD"),
+    ]
+    for lb, vl in inv_items:
+        _txt(Inches(0.55), y, Inches(1.6), Inches(0.25), lb + ":", sz=9, c=GRAY, b=True)
+        _txt(Inches(2.15), y, Inches(3.8), Inches(0.25), vl, sz=9, c=BLACK)
+        y += Inches(0.25)
+
+    # ── 右侧: 财务指标 ──
+    RX = Inches(6.3)
+    _rect(RX - Inches(0.1), Y0, Inches(0.12), Inches(0.32), fc=ORANGE)
+    _txt(RX + Inches(0.15), Y0, Inches(5), Inches(0.32),
+         "财务指标", sz=14, c=DARK, b=True)
+
+    irr_pre = result.project_irr_before_tax * 100
+    irr_post = result.project_irr_after_tax * 100
+    eq_irr = result.equity_irr * 100
+    lcoe_val = result.lcoe
+    pb = result.payback_after_tax
+    npv_val = result.project_npv_after_tax / 1e6
+
+    fin_rows = [
+        ("全投资IRR(税前)", f"{irr_pre:.2f}%", LBLUE, True),
+        ("全投资IRR(税后)", f"{irr_post:.2f}%", LBLUE, True),
+        ("资本金IRR", f"{eq_irr:.2f}%", LGREEN, True),
+        ("LCOE (USD/kWh)", f"{lcoe_val:.5f}", None, False),
+        ("LCOE (元/kWh)", f"{lcoe_val * 7.1:.4f}", None, False),
+        ("税后回收期 (年)", f"{pb:.2f}", None, False),
+        ("NPV 税后 (M USD)", f"{npv_val:.1f}", LGREEN, True),
+    ]
+
+    y_t = Y0 + Inches(0.45)
+    tbl = slide.shapes.add_table(
+        len(fin_rows) + 1, 2, RX - Inches(0.1), y_t,
+        Inches(6.9), Inches(len(fin_rows) * 0.35 + 0.32)).table
+    tbl.columns[0].width = Inches(2.5)
+    tbl.columns[1].width = Inches(4.4)
+
+    _cell(tbl, 0, 0, "指标", fc=DARK, color=WHITE, bold=True, sz=9)
+    _cell(tbl, 0, 1, "数值", fc=DARK, color=WHITE, bold=True, sz=9)
+
+    for ri, (label, value, bg, bold) in enumerate(fin_rows):
+        _cell(tbl, ri + 1, 0, label, sz=9, bold=True, al=PP_ALIGN.LEFT, fc=LGRAY)
+        cl = RED_HL if bold else BLACK
+        _cell(tbl, ri + 1, 1, value, sz=9, bold=bold, color=cl, fc=bg)
+
+    # ── 底部: 数据来源 & 假设 ──
+    y_bot = Inches(6.55)
+    _rect(Inches(0), y_bot, SLIDE_W, Inches(0.95), fc=RGBColor(0xF0, 0xF4, 0xF8))
+    _txt(Inches(0.5), y_bot + Inches(0.08), Inches(12), Inches(0.22),
+         "数据来源 & 假设", sz=8, c=GRAY, b=True)
+    _txt(Inches(0.5), y_bot + Inches(0.3), Inches(12), Inches(0.22),
+         f"电价(含税): {tariff_usd:.5f} USD/kWh | "
+         f"P90发电量: {inputs.basic.full_load_hours}h | "
+         f"线损率: {inputs.basic.loss_rate:.2%} | "
+         f"年上网电量: {inputs.net_annual_generation_mwh:,.0f} MWh",
+         sz=8, c=BLACK)
+    _txt(Inches(0.5), y_bot + Inches(0.52), Inches(12), Inches(0.22),
+         f"折旧{inputs.operational.depreciation_years}年 | "
+         f"残值率{inputs.operational.residual_rate:.1%} | "
+         f"所得税{inputs.tax_financial.income_tax_rate:.0%} | "
+         f"增值税{inputs.tax_financial.vat_rate:.0%} | "
+         f"折现率{inputs.tax_financial.discount_rate:.1%}",
+         sz=8, c=GRAY)
+    _txt(Inches(0.5), y_bot + Inches(0.72), Inches(12), Inches(0.22),
+         f"资本金{inputs.financing.equity_ratio:.0%} | "
+         f"贷款利率{inputs.financing.long_term_loan_rate:.2%} | "
+         f"贷款期限{inputs.financing.loan_term_years}年 | "
+         f"运营期{inputs.operational.operation_years}年",
+         sz=8, c=GRAY)
+
+    buf = BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
 def render_full_assessment(inputs: WindFarmFinancialInputs, result: CalculationResult, key_prefix: str = "main"):
     """
     渲染完整的项目评估视图（KPI + 参数 + 图表 + 明细表）。
@@ -960,15 +1155,25 @@ def render_full_assessment(inputs: WindFarmFinancialInputs, result: CalculationR
         use_container_width=True, height=400,
     )
 
-    # Excel 导出
+    # 导出按钮
     st.markdown("---")
-    excel_bytes = export_to_excel(inputs, result)
-    st.download_button(
-        "📥 下载 Excel 报告", data=excel_bytes,
-        file_name=f"{inputs.basic.project_name}_财务评价.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"{key_prefix}_dl_excel",
-    )
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        excel_bytes = export_to_excel(inputs, result)
+        st.download_button(
+            "📥 下载 Excel 报告", data=excel_bytes,
+            file_name=f"{inputs.basic.project_name}_财务评价.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}_dl_excel",
+        )
+    with dl_col2:
+        ppt_bytes = generate_ppt_bytes(inputs, result)
+        st.download_button(
+            "📥 下载 PPT 报告", data=ppt_bytes,
+            file_name=f"{inputs.basic.project_name}_经济性评估.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            key=f"{key_prefix}_dl_ppt",
+        )
 
 
 def reverse_calc_panel(inputs: WindFarmFinancialInputs):
@@ -1124,10 +1329,21 @@ def _render_irr_comparison_chart(profiles: list):
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _source_link(name: str, url: str) -> str:
+    """生成来源 markdown 链接，无 URL 则返回纯文本"""
+    if url:
+        return f"[{name}]({url})"
+    return name
+
+
+_TYPE_CN = {"onshore": "陆上", "offshore": "海上", "nearshore": "近海", "all": "通用"}
+
+
 def _render_country_detail_card(p: CountryProfile):
-    """单个国家的详情卡片"""
+    """单个国家的详情卡片 — 分板块展示"""
     st.markdown(f"### {p.country_name_cn} ({p.country_name})")
 
+    # ─── 基本参数指标卡 ───
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("货币", p.currency)
     col2.metric("资本金比例", f"{p.typical_equity_ratio*100:.0f}%")
@@ -1149,30 +1365,120 @@ def _render_country_detail_card(p: CountryProfile):
     if p.has_wind_tax_incentive:
         st.info(f"💡 **税收优惠**: {p.tax_incentive_description}")
 
-    # ─── 市场基准数据表 ───
-    if p.benchmarks:
+    # ─── 分板块市场报告 ───
+    rpt = p.market_report
+    has_report = rpt and (rpt.official_benchmarks or rpt.bnef_hurdles
+                          or rpt.actual_cases or rpt.wacc_data or rpt.summary)
+
+    if has_report:
+        _render_market_report_sections(rpt)
+
+        _render_radar_chart(p)
+
+    elif p.benchmarks:
         st.markdown("#### 📈 市场基准数据")
         bm_rows = []
         for b in p.benchmarks:
-            range_str = f"{b.value_low:.1f}%" if b.value_low == b.value_high else f"{b.value_low:.1f}% - {b.value_high:.1f}%"
-            source_str = f"[{b.source}]({b.source_url})" if b.source_url else b.source
+            range_str = (f"{b.value_low:.1f}%" if b.value_low == b.value_high
+                         else f"{b.value_low:.1f}% - {b.value_high:.1f}%")
+            source_str = _source_link(b.source, b.source_url)
             bm_rows.append({
                 "指标": b.metric,
-                "项目类型": {"onshore": "陆上", "offshore": "海上", "nearshore": "近海", "all": "通用"}.get(b.project_type, b.project_type),
+                "项目类型": _TYPE_CN.get(b.project_type, b.project_type),
                 "数值范围": range_str,
                 "来源": source_str,
                 "年份": b.year,
                 "备注": b.note,
             })
-        bm_df = pd.DataFrame(bm_rows)
-        st.dataframe(bm_df, use_container_width=True, hide_index=True)
+        md_header = "| 指标 | 项目类型 | 数值范围 | 来源 | 年份 | 备注 |\n| :-- | :-- | :-- | :-- | :-- | :-- |"
+        md_body = "\n".join(
+            f"| {r['指标']} | {r['项目类型']} | {r['数值范围']} | {r['来源']} | {r['年份']} | {r['备注']} |"
+            for r in bm_rows
+        )
+        st.markdown(md_header + "\n" + md_body, unsafe_allow_html=True)
 
-        # ─── 雷达图 ───
         _render_radar_chart(p)
     else:
         st.warning("该国家暂无市场基准数据")
 
     st.caption(f"数据更新: {p.data_updated}")
+
+
+def _render_market_report_sections(rpt):
+    """渲染分板块市场报告（官方基准 / BNEF / 实际案例 / WACC / 总结）"""
+
+    # ─── 一、官方 IRR 基准 ───
+    if rpt.official_benchmarks:
+        st.markdown("#### 一、官方/政府定价模型中的 IRR 基准")
+        header = "| 来源 | 项目类型 | 股权收益率 (Equity IRR) | 融资结构 | 备注 |\n| :-- | :-- | :-- | :-- | :-- |"
+        rows = []
+        sources = []
+        for b in rpt.official_benchmarks:
+            rows.append(
+                f"| {b.source_ref} | {_TYPE_CN.get(b.project_type, b.project_type)} "
+                f"| {b.equity_irr:.1f}% | {b.financing_structure} | {b.notes} |"
+            )
+            sources.append(_source_link(b.source, b.source_url))
+        st.markdown(header + "\n" + "\n".join(rows), unsafe_allow_html=True)
+        unique_sources = list(dict.fromkeys(sources))
+        st.caption("来源: " + " ; ".join(unique_sources))
+
+    # ─── 二、BNEF Hurdle IRR ───
+    if rpt.bnef_hurdles:
+        st.markdown("#### 二、国际研报 Hurdle IRR")
+        header = "| 项目类型 | 当前值 | 2030年(预测) | 2050年(预测) | 融资假设 |\n| :-- | :-- | :-- | :-- | :-- |"
+        rows = []
+        sources = []
+        for b in rpt.bnef_hurdles:
+            rows.append(
+                f"| {_TYPE_CN.get(b.project_type, b.project_type)} "
+                f"| {b.current_value} | {b.forecast_2030 or '—'} "
+                f"| {b.forecast_2050 or '—'} | {b.financing_assumption or '—'} |"
+            )
+            sources.append(_source_link(f"{b.source} ({b.report_name}, {b.year})", b.source_url))
+        st.markdown(header + "\n" + "\n".join(rows), unsafe_allow_html=True)
+        unique_sources = list(dict.fromkeys(sources))
+        st.caption("来源: " + " ; ".join(unique_sources))
+
+    # ─── 三、实际项目案例 ───
+    if rpt.actual_cases:
+        st.markdown("#### 三、实际项目 IRR 案例")
+        header = "| 项目/公司 | 类型 | IRR 类型 | 实际/预期 IRR | 备注 |\n| :-- | :-- | :-- | :-- | :-- |"
+        rows = []
+        sources = []
+        for c in rpt.actual_cases:
+            rows.append(
+                f"| {c.project_name} | {_TYPE_CN.get(c.project_type, c.project_type)} "
+                f"| {c.irr_type} | {c.irr_value} | {c.notes} |"
+            )
+            if c.source:
+                sources.append(_source_link(c.source, c.source_url))
+        st.markdown(header + "\n" + "\n".join(rows), unsafe_allow_html=True)
+        if sources:
+            unique_sources = list(dict.fromkeys(sources))
+            st.caption("来源: " + " ; ".join(unique_sources))
+
+    # ─── 四、WACC / 融资成本 ───
+    if rpt.wacc_data:
+        st.markdown("#### 四、WACC / 融资成本")
+        header = "| 来源 | 指标 | 数值 | 备注 |\n| :-- | :-- | :-- | :-- |"
+        rows = []
+        sources = []
+        for w in rpt.wacc_data:
+            rows.append(f"| {w.source} | {w.indicator} | {w.value} | {w.notes} |")
+            sources.append(_source_link(w.source, w.source_url))
+        st.markdown(header + "\n" + "\n".join(rows), unsafe_allow_html=True)
+        unique_sources = list(dict.fromkeys(sources))
+        st.caption("来源: " + " ; ".join(unique_sources))
+
+    # ─── 五、总结判断 ───
+    if rpt.summary:
+        st.markdown("#### 五、总结判断")
+        header = "| 场景 | IRR 范围 |\n| :-- | :-- |"
+        rows = [f"| {s.scenario} | {s.irr_range} |" for s in rpt.summary]
+        st.markdown(header + "\n" + "\n".join(rows), unsafe_allow_html=True)
+        if rpt.summary_conclusion:
+            st.markdown(f"> {rpt.summary_conclusion}")
 
 
 def _render_radar_chart(p: CountryProfile):
