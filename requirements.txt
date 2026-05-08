@@ -5,3 +5,5 @@ streamlit
 plotly
 pandas
 python-pptx
+pytesseract
+Pillow
