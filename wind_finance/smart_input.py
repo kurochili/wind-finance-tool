@@ -89,7 +89,7 @@ def _parse_number(text: str) -> Optional[float]:
 def _match_field(label: str) -> Optional[str]:
     """将表格行标题匹配到标准字段名。"""
     label_clean = str(label).strip()
-    if re.search(r"wtg\s*type|机型|turbine", label_clean, re.IGNORECASE):
+    if re.search(r"w[tir]g\s*type|机型|turbine|wtg", label_clean, re.IGNORECASE):
         return "wtg_type"
     for pattern, field_name in _FIELD_PATTERNS:
         if re.search(pattern, label_clean, re.IGNORECASE):
@@ -240,28 +240,27 @@ def _parse_ocr_text(text: str) -> List[Dict]:
         return []
 
     # 第一步：找到 WTG Type 行来确定有几列（几个方案）
-    num_schemes = 0
     wtg_names: List[str] = []
 
     for line in lines:
-        if re.search(r"wtg\s*type|机型|turbine", line, re.IGNORECASE):
-            tokens = re.split(r"[|\t]{1,}|  {2,}", line)
-            tokens = [t.strip() for t in tokens if t.strip()]
-            # 排除标签本身
-            for t in tokens:
-                if re.search(r"MySE|WTG|机型|turbine", t, re.IGNORECASE):
-                    if re.search(r"\d", t) and re.search(r"MySE", t, re.IGNORECASE):
+        if re.search(r"w[tir]g\s*type|机型|turbine|wtg", line, re.IGNORECASE):
+            # 提取所有 MySE 开头的机型名
+            mysE_matches = re.findall(r"MySE[\w.\-]+", line, re.IGNORECASE)
+            if mysE_matches:
+                wtg_names = mysE_matches
+            else:
+                tokens = re.split(r"[|\t]{1,}|  {2,}", line)
+                tokens = [t.strip() for t in tokens if t.strip()]
+                for t in tokens:
+                    if re.search(r"\d", t) and not re.search(r"w[tir]g|type|机型|turbine", t, re.IGNORECASE):
                         wtg_names.append(t)
-                elif re.search(r"\d", t):
-                    wtg_names.append(t)
             break
 
+    # 从所有数值行猜测方案数量
     num_schemes = max(len(wtg_names), 1)
     if not wtg_names:
-        # 尝试从所有行中猜测方案数
         num_schemes = _guess_num_schemes(lines)
 
-    # 初始化记录
     records: List[Dict] = [{"wtg_type": wtg_names[i] if i < len(wtg_names) else ""}
                            for i in range(num_schemes)]
 
@@ -302,18 +301,51 @@ def _guess_num_schemes(lines: List[str]) -> int:
 
 
 def _extract_numbers_from_line(line: str) -> List[float]:
-    """从一行文本中提取所有数值。"""
-    # 先按分隔符拆分
-    tokens = re.split(r"[|\t]", line)
-    if len(tokens) < 2:
-        tokens = re.split(r"  {2,}", line)
+    """从一行文本中提取所有数值。
 
+    支持 tab/pipe 分隔、多空格分隔、以及末尾连续空格分隔的数字。
+    """
+    # 先尝试 tab / pipe 分隔
+    tokens = re.split(r"[|\t]", line)
+    if len(tokens) >= 3:
+        results = []
+        for token in tokens:
+            num = _parse_number(token.strip())
+            if num is not None:
+                results.append(num)
+        if results:
+            return results
+
+    # 再尝试多空格分隔
+    tokens = re.split(r"  {2,}", line)
+    if len(tokens) >= 2:
+        results = []
+        for token in tokens:
+            num = _parse_number(token.strip())
+            if num is not None:
+                results.append(num)
+        if results:
+            return results
+
+    # 最后：从行尾提取所有独立数字（OCR 常用空格分隔）
+    # 去掉行首的字段标签部分，只取数值区域
+    # 例如: "TSI [USD/KW] 611 592" → 提取 611, 592
+    # 例如: "Units AT 40" → 提取 40
+    all_nums = re.findall(r"(?<!\w)(-?\d[\d,]*\.?\d*)%?(?!\w)", line)
     results = []
-    for token in tokens:
-        token = token.strip()
-        num = _parse_number(token)
-        if num is not None:
-            results.append(num)
+    for s in all_nums:
+        s_clean = s.replace(",", "")
+        try:
+            val = float(s_clean)
+            if "%" in line and line.index(s) > 0:
+                # 检查这个数字后面是否紧跟 %
+                pos = line.find(s)
+                after = line[pos + len(s):pos + len(s) + 1]
+                if after == "%":
+                    val = val / 100.0
+            results.append(val)
+        except ValueError:
+            continue
     return results
 
 
