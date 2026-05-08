@@ -1,7 +1,7 @@
 """
-预装 Ha Tinh (河静省) 海上风电项目 - 3个机型方案
+预装 Ha Tinh (河静省) 近海风电项目 - 5个机型方案 (3+2)
 数据来源: 经济性计算输入.xlsx
-电价: 0.170 USD/kWh (含税, 北部湾区域上限)
+电价: Decision 1508/QĐ-BCT nearshore 1,987.4 VND/kWh (不含税)
 """
 
 from .models import (
@@ -16,13 +16,20 @@ FX_VND = 25700  # VND per USD
 TARIFF_VND_NOTAX = 1987.4  # Decision 1508/QĐ-BCT 近海风电 不含VAT
 TARIFF = TARIFF_VND_NOTAX * 1.10 / FX_VND  # 含税 USD/kWh ≈ 0.0851
 
-VARIANTS = [
+VARIANTS_V1 = [
     {"wtg": "MySE8.5-230", "units": 47, "mw": 8.5, "p90_hrs": 2070,
      "tsi_per_kw": 563.40, "bop_per_kw": 838.60, "capex_per_kw": 1402.0},
     {"wtg": "MySE5.0-233", "units": 80, "mw": 5.0, "p90_hrs": 2353,
      "tsi_per_kw": 674.72, "bop_per_kw": 871.14, "capex_per_kw": 1545.86},
     {"wtg": "MySE9.0-210", "units": 45, "mw": 9.0, "p90_hrs": 1810,
      "tsi_per_kw": 451.43, "bop_per_kw": 826.77, "capex_per_kw": 1278.20},
+]
+
+VARIANTS_V2 = [
+    {"wtg": "MySE8.5-230(V2)", "units": 47, "mw": 8.5, "p90_hrs": 2070,
+     "tsi_per_kw": 611.0, "bop_per_kw": 839.0, "capex_per_kw": 1450.0},
+    {"wtg": "MySE10-242", "units": 40, "mw": 10.0, "p90_hrs": 1944,
+     "tsi_per_kw": 592.0, "bop_per_kw": 811.0, "capex_per_kw": 1403.0},
 ]
 
 ProjectEntry = tuple[str, str, str, WindFarmFinancialInputs, CalculationResult]
@@ -103,12 +110,16 @@ def _build(v) -> tuple[WindFarmFinancialInputs, CalculationResult]:
 
 
 def get_all_projects() -> list[ProjectEntry]:
-    GROUP = "Ha Tinh Offshore"
     COUNTRY = "Vietnam"
     projects: list[ProjectEntry] = []
-    for v in VARIANTS:
+    for v in VARIANTS_V1:
         cap = v["units"] * v["mw"]
         inp, res = _build(v)
         name = f"Ha Tinh-{v['wtg']} ({cap:.0f}MW)"
-        projects.append((name, GROUP, COUNTRY, inp, res))
+        projects.append((name, "Ha Tinh 3机型对比", COUNTRY, inp, res))
+    for v in VARIANTS_V2:
+        cap = v["units"] * v["mw"]
+        inp, res = _build(v)
+        name = f"Ha Tinh-{v['wtg']} ({cap:.0f}MW)"
+        projects.append((name, "Ha Tinh 8.5vs10对比", COUNTRY, inp, res))
     return projects
