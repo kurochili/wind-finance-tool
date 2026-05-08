@@ -30,7 +30,10 @@ from wind_finance.country_profiles import (
 )
 from wind_finance.excel_export import export_to_excel
 try:
-    from wind_finance.smart_input import parse_excel, parse_image, extract_mw_from_name
+    from wind_finance.smart_input import (
+        parse_excel, parse_image, extract_mw_from_name,
+        detect_country_from_excel, detect_country_from_image_text,
+    )
     _HAS_SMART_INPUT = True
 except ImportError:
     _HAS_SMART_INPUT = False
@@ -260,6 +263,87 @@ def _generate_template_excel() -> bytes:
     return buf.getvalue()
 
 
+def _safe_float(val) -> Optional[float]:
+    """安全转换为 float，无法转换则返回 None"""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return f if f != 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _validate_smart_params(df: pd.DataFrame, tariff_default: float, is_offshore: bool):
+    """
+    校验智能输入表格，返回 (errors, warnings)。
+    errors: 必须修正才能计算
+    warnings: 风险提示，确认后可继续
+    """
+    errors = []
+    warnings = []
+
+    for idx, row in df.iterrows():
+        label = row["方案"] if pd.notna(row["方案"]) else f"方案{idx+1}"
+
+        # ── 错误：必填字段缺失或无效 ──
+        units = row.get("台数")
+        if pd.isna(units) or units is None or units <= 0:
+            errors.append(f"**{label}** — 「台数」缺失或为 0，必须填写")
+        mw = row.get("单机MW")
+        if pd.isna(mw) or mw is None or mw <= 0:
+            errors.append(f"**{label}** — 「单机MW」缺失或为 0，必须填写")
+        p90 = row.get("P90(h)")
+        if pd.isna(p90) or p90 is None or p90 <= 0:
+            errors.append(f"**{label}** — 「P90等效小时数」缺失或为 0，必须填写")
+
+        capex = row.get("CAPEX($/kW)")
+        tsi = row.get("TSI($/kW)")
+        bop = row.get("BOP($/kW)")
+        has_capex = pd.notna(capex) and capex is not None and capex > 0
+        has_tsi = pd.notna(tsi) and tsi is not None and tsi > 0
+        has_bop = pd.notna(bop) and bop is not None and bop > 0
+        if not has_capex and not (has_tsi and has_bop):
+            errors.append(f"**{label}** — 投资数据缺失：请填写「CAPEX」或同时填写「TSI + BOP」")
+
+        # ── 风险：数值异常范围 ──
+        if pd.notna(p90) and p90 is not None and p90 > 0:
+            if p90 < 1500:
+                warnings.append(f"**{label}** — P90={int(p90)}h 偏低（通常 > 2000h），请确认")
+            elif p90 > 5000:
+                warnings.append(f"**{label}** — P90={int(p90)}h 偏高（通常 < 4500h），请确认")
+
+        eff_capex = capex if has_capex else ((tsi or 0) + (bop or 0))
+        if eff_capex and eff_capex > 0:
+            if is_offshore and eff_capex < 500:
+                warnings.append(f"**{label}** — CAPEX={eff_capex:.0f} $/kW 对海上项目偏低（通常 > 800），请确认")
+            elif not is_offshore and eff_capex < 300:
+                warnings.append(f"**{label}** — CAPEX={eff_capex:.0f} $/kW 偏低（通常 > 500），请确认")
+            if eff_capex > 4000:
+                warnings.append(f"**{label}** — CAPEX={eff_capex:.0f} $/kW 偏高（通常 < 3000），请确认")
+
+        if pd.notna(mw) and mw is not None and mw > 0:
+            if mw > 20:
+                warnings.append(f"**{label}** — 单机 {mw:.1f}MW 超大容量，请确认是否正确")
+
+        if pd.notna(units) and units is not None and units > 0:
+            if units > 200:
+                warnings.append(f"**{label}** — 台数 {int(units)} 台偏多，请确认")
+
+        tariff_val = row.get("电价(USD/kWh)")
+        if pd.notna(tariff_val) and tariff_val is not None and tariff_val > 0:
+            if tariff_val > 0.25:
+                warnings.append(f"**{label}** — 电价 {tariff_val:.4f} USD/kWh 偏高（> 0.25），请确认")
+            elif tariff_val < 0.03:
+                warnings.append(f"**{label}** — 电价 {tariff_val:.4f} USD/kWh 偏低（< 0.03），请确认")
+
+        if has_tsi and has_bop and has_capex:
+            if abs((tsi + bop) - capex) > 50:
+                warnings.append(f"**{label}** — TSI({tsi:.0f}) + BOP({bop:.0f}) = {tsi+bop:.0f} 与 CAPEX({capex:.0f}) 差异较大，将以 CAPEX 为准")
+
+    return errors, warnings
+
+
 def smart_upload_panel():
     """上传 Excel 或图片，自动提取参数并批量计算多方案"""
     st.markdown("### 📤 智能上传")
@@ -299,7 +383,11 @@ def smart_upload_panel():
 
         uploaded = st.file_uploader("上传 Excel 文件", type=["xlsx", "xls"], key="su_excel")
         if uploaded:
-            variants = parse_excel(uploaded.read())
+            raw_bytes = uploaded.read()
+            variants = parse_excel(raw_bytes)
+            _detected = detect_country_from_excel(raw_bytes, uploaded.name) if _HAS_SMART_INPUT else None
+            if _detected:
+                st.session_state["_su_detected_country"] = _detected
         else:
             variants = []
     else:
@@ -308,9 +396,21 @@ def smart_upload_panel():
         if uploaded:
             st.image(uploaded, caption="上传的截图", use_container_width=True)
             uploaded.seek(0)
-            variants = parse_image(uploaded.read())
+            raw_bytes = uploaded.read()
+            variants = parse_image(raw_bytes)
             if not variants:
                 st.warning("OCR 未能提取参数。建议改用 Excel 上传（更可靠）或手动输入。")
+            try:
+                import pytesseract
+                from PIL import Image
+                _ocr_text = pytesseract.image_to_string(
+                    Image.open(io.BytesIO(raw_bytes)), lang="eng+chi_sim"
+                )
+            except Exception:
+                _ocr_text = ""
+            _detected = detect_country_from_image_text(_ocr_text, uploaded.name) if _HAS_SMART_INPUT else None
+            if _detected:
+                st.session_state["_su_detected_country"] = _detected
         else:
             variants = []
 
@@ -320,12 +420,23 @@ def smart_upload_panel():
     st.success(f"成功提取 **{len(variants)}** 个方案：" +
                " vs ".join(v.get("wtg_type", f"方案{i+1}") for i, v in enumerate(variants)))
 
+    # 国家自动检测
     countries = list_countries()
     country_options = {f"{cn} ({en})": en for en, cn in countries}
+    detected_country = st.session_state.get("_su_detected_country")
+    default_idx = 0
+    if detected_country:
+        for i, (display, en) in enumerate(country_options.items()):
+            if en.lower() == detected_country.lower():
+                default_idx = i
+                break
+
     col_c, col_t = st.columns(2)
     with col_c:
-        sel_country = st.selectbox("国家", list(country_options.keys()), index=0, key="su_country")
+        sel_country = st.selectbox("国家", list(country_options.keys()), index=default_idx, key="su_country")
         country_name = country_options[sel_country]
+        if detected_country:
+            st.caption(f"🔍 系统自动识别为 **{detected_country}**（可手动更改）")
     with col_t:
         project_type = st.selectbox("项目类型", ["Offshore", "Onshore"], index=0, key="su_ptype")
     is_offshore = project_type == "Offshore"
@@ -359,33 +470,94 @@ def smart_upload_panel():
     else:
         tax_holiday = (1, 3, 0.0, 4, 6, cit / 2.0)
 
+    # ── Step 1: 构建可编辑表格 ──
     st.markdown("---")
-    st.markdown("### 📊 提取的方案参数")
+    st.markdown("### 📊 参数确认 — 请核对并修改")
+    st.caption("识别结果已填入下表，您可以**直接编辑**每个单元格。标红项为必须修正的错误，橙色为风险提示。")
 
-    param_rows = []
-    for v in variants:
-        param_rows.append({
-            "机型": v.get("wtg_type", "—"),
-            "台数": v.get("units", "—"),
-            "MW": v.get("turbine_mw", "—"),
-            "P90(h)": v.get("p90_hours", "—"),
-            "TSI($/kW)": v.get("tsi_per_kw", "—"),
-            "BOP($/kW)": v.get("bop_per_kw", "—"),
-            "CAPEX($/kW)": v.get("capex_per_kw", "—"),
+    edit_rows = []
+    for i, v in enumerate(variants):
+        edit_rows.append({
+            "方案": v.get("wtg_type", f"方案{i+1}"),
+            "台数": _safe_float(v.get("units", None)),
+            "单机MW": _safe_float(v.get("turbine_mw", None)),
+            "P90(h)": _safe_float(v.get("p90_hours", None)),
+            "电价(USD/kWh)": _safe_float(v.get("tariff_usd", None)),
+            "TSI($/kW)": _safe_float(v.get("tsi_per_kw", None)),
+            "BOP($/kW)": _safe_float(v.get("bop_per_kw", None)),
+            "CAPEX($/kW)": _safe_float(v.get("capex_per_kw", None)),
         })
-    st.dataframe(pd.DataFrame(param_rows), use_container_width=True, hide_index=True)
 
-    if st.button("🚀 计算全部方案", type="primary", key="su_calc"):
+    edit_df = pd.DataFrame(edit_rows)
+    col_config = {
+        "方案": st.column_config.TextColumn("方案/机型", width="medium"),
+        "台数": st.column_config.NumberColumn("台数", min_value=1, max_value=500, step=1, format="%d"),
+        "单机MW": st.column_config.NumberColumn("单机MW", min_value=0.5, max_value=30.0, step=0.5, format="%.1f"),
+        "P90(h)": st.column_config.NumberColumn("P90(h)", min_value=500, max_value=6000, step=10, format="%d"),
+        "电价(USD/kWh)": st.column_config.NumberColumn("电价(USD/kWh)", min_value=0.0, max_value=0.500, step=0.001, format="%.4f"),
+        "TSI($/kW)": st.column_config.NumberColumn("TSI($/kW)", min_value=0, max_value=5000, step=10, format="%.0f"),
+        "BOP($/kW)": st.column_config.NumberColumn("BOP($/kW)", min_value=0, max_value=5000, step=10, format="%.0f"),
+        "CAPEX($/kW)": st.column_config.NumberColumn("CAPEX($/kW)", min_value=0, max_value=8000, step=10, format="%.0f"),
+    }
+
+    edited_df = st.data_editor(
+        edit_df,
+        column_config=col_config,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key="su_editor",
+    )
+
+    # ── Step 2: 数据校验 ──
+    errors, warnings = _validate_smart_params(edited_df, tariff_override, is_offshore)
+
+    has_errors = len(errors) > 0
+    has_warnings = len(warnings) > 0
+
+    if has_errors:
+        st.markdown("#### :red[错误 — 必须修正后才能计算]")
+        for e in errors:
+            st.error(e, icon="🚫")
+    if has_warnings:
+        st.markdown("#### :orange[风险提示 — 请确认后继续]")
+        for w in warnings:
+            st.warning(w, icon="⚠️")
+
+    if not has_errors and not has_warnings:
+        st.success("所有参数校验通过，可以计算！", icon="✅")
+
+    # ── Step 3: 计算按钮 — 分级控制 ──
+    can_calc = False
+    if has_errors:
+        st.button("🚀 计算全部方案", type="primary", key="su_calc", disabled=True,
+                  help="存在必须修正的错误，请先编辑上方表格")
+    elif has_warnings:
+        confirmed = st.checkbox("我已确认上述风险项，继续计算", key="su_risk_confirm")
+        if confirmed:
+            can_calc = True
+            if st.button("🚀 确认并计算全部方案", type="primary", key="su_calc"):
+                pass
+            else:
+                can_calc = False
+        else:
+            st.button("🚀 计算全部方案", type="primary", key="su_calc", disabled=True,
+                      help="请先勾选确认风险项")
+    else:
+        if st.button("🚀 计算全部方案", type="primary", key="su_calc"):
+            can_calc = True
+
+    if can_calc:
         all_results = []
-        for v in variants:
-            wtg = v.get("wtg_type", "Variant")
-            units = int(v.get("units", 40))
-            mw = float(v.get("turbine_mw", 10.0))
-            p90 = int(v.get("p90_hours", 2500))
-            tariff = float(v.get("tariff_usd", tariff_override) or tariff_override)
-            tsi = float(v.get("tsi_per_kw", 600))
-            bop = float(v.get("bop_per_kw", 800))
-            capex = float(v.get("capex_per_kw", tsi + bop))
+        for idx, row in edited_df.iterrows():
+            wtg = str(row["方案"]) if pd.notna(row["方案"]) else f"方案{idx+1}"
+            units = int(row["台数"]) if pd.notna(row["台数"]) and row["台数"] > 0 else 40
+            mw = float(row["单机MW"]) if pd.notna(row["单机MW"]) and row["单机MW"] > 0 else 10.0
+            p90 = int(row["P90(h)"]) if pd.notna(row["P90(h)"]) and row["P90(h)"] > 0 else 2500
+            tariff_val = float(row["电价(USD/kWh)"]) if pd.notna(row["电价(USD/kWh)"]) and row["电价(USD/kWh)"] > 0 else tariff_override
+            tsi = float(row["TSI($/kW)"]) if pd.notna(row["TSI($/kW)"]) else 0
+            bop = float(row["BOP($/kW)"]) if pd.notna(row["BOP($/kW)"]) else 0
+            capex = float(row["CAPEX($/kW)"]) if pd.notna(row["CAPEX($/kW)"]) and row["CAPEX($/kW)"] > 0 else (tsi + bop)
 
             basic = BasicInfo(
                 project_name=f"Smart - {wtg}", project_type="offshore" if is_offshore else "onshore",
@@ -410,7 +582,7 @@ def smart_upload_panel():
                 offshore_extra=offshore_extra,
             )
             tax_financial = TaxAndFinancial(
-                tariff_with_tax=tariff, vat_rate=vat, vat_refund_rate=0.0,
+                tariff_with_tax=tariff_val, vat_rate=vat, vat_refund_rate=0.0,
                 income_tax_rate=cit, income_tax_holiday=tax_holiday,
                 urban_maintenance_tax_rate=urban_tax, education_surcharge_rate=edu_sur,
                 discount_rate=0.08,
@@ -418,19 +590,19 @@ def smart_upload_panel():
             inp = WindFarmFinancialInputs(basic=basic, investment=investment, financing=financing,
                                           operational=operational, tax_financial=tax_financial)
             res = calculate(inp)
-            all_results.append((wtg, v, inp, res))
+            all_results.append((wtg, row, inp, res))
 
-            pid = save_project(f"Smart - {wtg}", inp, res)
+            save_project(f"Smart - {wtg}", inp, res)
 
         st.success(f"已计算并保存 {len(all_results)} 个方案！")
 
         result_rows = []
-        for wtg, v, inp, res in all_results:
-            cap = int(v.get("units", 40)) * float(v.get("turbine_mw", 10))
+        for wtg, row, inp, res in all_results:
+            cap = int(row["台数"] or 40) * float(row["单机MW"] or 10)
             result_rows.append({
                 "机型": wtg,
                 "容量(MW)": f"{cap:.0f}",
-                "CAPEX($/kW)": v.get("capex_per_kw", "—"),
+                "CAPEX($/kW)": f"{row['CAPEX($/kW)'] or 0:.0f}",
                 "全投IRR税前": f"{res.project_irr_before_tax*100:.2f}%",
                 "全投IRR税后": f"{res.project_irr_after_tax*100:.2f}%",
                 "资本金IRR": f"{res.equity_irr*100:.2f}%",
@@ -2532,30 +2704,32 @@ def main():
     # ── 顶部标题 + 明阳 logo ──
     _logo_dir = os.path.dirname(os.path.abspath(__file__))
     _my_logo = os.path.join(_logo_dir, "mingyang_logo.png")
-    _cat_logo = os.path.join(_logo_dir, "author_cat_logo.png")
+    _cat_svg = os.path.join(_logo_dir, "author_cat_logo.svg")
 
-    # 明阳 logo — 加顶部留白避开 Streamlit 顶栏遮挡
-    st.sidebar.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
+    # 明阳 logo — 侧边栏顶部，留白避开顶栏
+    st.sidebar.markdown("<div style='margin-top:2.5rem'></div>", unsafe_allow_html=True)
     if os.path.exists(_my_logo):
-        st.sidebar.image(_my_logo, width=180)
+        st.sidebar.image(_my_logo, width=220)
         st.sidebar.caption("Powered by **MINGYANG**")
 
     st.title("🌬️ 风电项目经济性评估")
     st.caption("Wind Farm Financial Assessment Dashboard | 多项目管理 & 对比 | 货币: USD")
 
-    # ── 侧边栏底部：作者信息 ──
+    # ── 侧边栏底部：作者信息（SVG 矢量猫 + 文字） ──
     st.sidebar.markdown("---")
-    _sb_cols = st.sidebar.columns([1, 3])
-    with _sb_cols[0]:
-        if os.path.exists(_cat_logo):
-            st.image(_cat_logo, width=68)
-    with _sb_cols[1]:
-        st.markdown(
-            "<span style='color:#888;line-height:1.4;font-size:0.9rem'>"
-            "<b>MingYang Wind Tool</b><br>"
-            "Built by kurochilli</span>",
-            unsafe_allow_html=True,
-        )
+    _cat_html = ""
+    if os.path.exists(_cat_svg):
+        with open(_cat_svg, "r", encoding="utf-8") as f:
+            _cat_html = f.read()
+    st.sidebar.markdown(
+        "<div style='display:flex;align-items:center;gap:10px;padding:4px 0'>"
+        f"<div style='width:56px;min-width:56px'>{_cat_html}</div>"
+        "<div style='color:#888;line-height:1.4;font-size:0.9rem'>"
+        "<b>MingYang Wind Tool</b><br>"
+        "Built by kurochilli</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     page = st.tabs(["📈 项目评估", "📊 项目对比", "🗂️ 项目管理", "🌍 各国市场概览"])
 
