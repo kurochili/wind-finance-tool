@@ -416,11 +416,15 @@ def smart_upload_panel():
         else:
             variants = []
 
-    if not variants:
+    if not variants and not uploaded:
         return None
 
-    st.success(f"成功提取 **{len(variants)}** 个方案：" +
-               " vs ".join(v.get("wtg_type", f"方案{i+1}") for i, v in enumerate(variants)))
+    if variants:
+        st.success(f"成功提取 **{len(variants)}** 个方案：" +
+                   " vs ".join(v.get("wtg_type", f"方案{i+1}") for i, v in enumerate(variants)))
+    elif uploaded:
+        st.info("未能自动提取方案，请在下方表格中**手动填写**参数。")
+        variants = [{"wtg_type": "方案1"}, {"wtg_type": "方案2"}]
 
     # 国家自动检测
     countries = list_countries()
@@ -507,7 +511,7 @@ def smart_upload_panel():
         column_config=col_config,
         use_container_width=True,
         hide_index=True,
-        num_rows="fixed",
+        num_rows="dynamic",
         key="su_editor",
     )
 
@@ -536,22 +540,24 @@ def smart_upload_panel():
                   help="存在必须修正的错误，请先编辑上方表格")
     elif has_warnings:
         confirmed = st.checkbox("我已确认上述风险项，继续计算", key="su_risk_confirm")
-        if confirmed:
-            can_calc = True
-            if st.button("🚀 确认并计算全部方案", type="primary", key="su_calc"):
-                pass
-            else:
-                can_calc = False
-        else:
-            st.button("🚀 计算全部方案", type="primary", key="su_calc", disabled=True,
+        if not confirmed:
+            st.button("🚀 计算全部方案", type="primary", key="su_calc_disabled", disabled=True,
                       help="请先勾选确认风险项")
+        else:
+            if st.button("🚀 确认并计算全部方案", type="primary", key="su_calc"):
+                can_calc = True
     else:
         if st.button("🚀 计算全部方案", type="primary", key="su_calc"):
             can_calc = True
 
     if can_calc:
         all_results = []
-        for idx, row in edited_df.iterrows():
+        valid_df = edited_df.dropna(subset=["CAPEX($/kW)"], how="all")
+        valid_df = valid_df[valid_df["方案"].notna() & (valid_df["方案"] != "")]
+        if valid_df.empty:
+            st.error("没有有效的方案数据可以计算")
+            return None
+        for idx, row in valid_df.iterrows():
             wtg = str(row["方案"]) if pd.notna(row["方案"]) else f"方案{idx+1}"
             units = int(row["台数"]) if pd.notna(row["台数"]) and row["台数"] > 0 else 40
             mw = float(row["单机MW"]) if pd.notna(row["单机MW"]) and row["单机MW"] > 0 else 10.0
