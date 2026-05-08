@@ -22,8 +22,10 @@ import streamlit as st
 from wind_finance.calculator import CalculationResult, calculate
 from wind_finance.country_profiles import (
     CountryProfile,
+    MarketBenchmark,
     get_country_profile,
     list_countries,
+    _PROFILES,
 )
 from wind_finance.excel_export import export_to_excel
 from wind_finance.models import (
@@ -1038,6 +1040,210 @@ def reverse_calc_panel(inputs: WindFarmFinancialInputs):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# 各国市场概览面板
+# ════════════════════════════════════════════════════════════════════════════
+
+def render_market_overview():
+    """各国风电市场概览 — IRR / WACC 对比 + 国家详情 + 汇总表"""
+    st.header("🌍 各国风电市场概览")
+    st.caption("数据来源: BNEF, IRENA, IEA, World Bank, 各国政府部门 | 仅供参考")
+
+    profiles = list(_PROFILES.values())
+
+    # ─── 顶部: 各国 Equity IRR 横向对比柱状图 ───
+    st.subheader("📊 各国 Equity IRR 对比")
+    _render_irr_comparison_chart(profiles)
+
+    st.markdown("---")
+
+    # ─── 中间: 国家选择器 + 详情卡片 ───
+    st.subheader("🔍 国家详情")
+    country_options = {p.country_name_cn: p for p in profiles}
+    selected_name = st.selectbox(
+        "选择国家", list(country_options.keys()), key="market_country_select"
+    )
+    if selected_name:
+        _render_country_detail_card(country_options[selected_name])
+
+    st.markdown("---")
+
+    # ─── 底部: 全部国家对比汇总表 ───
+    st.subheader("📋 全部国家对比汇总表")
+    _render_summary_table(profiles)
+
+
+def _render_irr_comparison_chart(profiles: list):
+    """各国 Equity IRR 范围对比 — Plotly grouped bar chart"""
+    rows = []
+    for p in profiles:
+        onshore_irrs = [b for b in p.benchmarks if b.metric == "Equity IRR" and b.project_type in ("onshore", "all")]
+        offshore_irrs = [b for b in p.benchmarks if b.metric == "Equity IRR" and b.project_type in ("offshore", "nearshore", "all")]
+
+        if onshore_irrs:
+            low = min(b.value_low for b in onshore_irrs)
+            high = max(b.value_high for b in onshore_irrs)
+            rows.append({"国家": p.country_name_cn, "类型": "陆上", "IRR下限(%)": low, "IRR上限(%)": high, "中值(%)": (low + high) / 2})
+        if offshore_irrs:
+            low = min(b.value_low for b in offshore_irrs)
+            high = max(b.value_high for b in offshore_irrs)
+            rows.append({"国家": p.country_name_cn, "类型": "海上/近海", "IRR下限(%)": low, "IRR上限(%)": high, "中值(%)": (low + high) / 2})
+
+    if not rows:
+        st.info("暂无 IRR 基准数据")
+        return
+
+    df = pd.DataFrame(rows)
+
+    fig = go.Figure()
+    colors = {"陆上": "#2ecc71", "海上/近海": "#3498db"}
+    for typ in df["类型"].unique():
+        sub = df[df["类型"] == typ]
+        fig.add_trace(go.Bar(
+            name=typ,
+            x=sub["国家"],
+            y=sub["中值(%)"],
+            error_y=dict(
+                type="data",
+                symmetric=False,
+                array=(sub["IRR上限(%)"] - sub["中值(%)"]).tolist(),
+                arrayminus=(sub["中值(%)"] - sub["IRR下限(%)"]).tolist(),
+            ),
+            marker_color=colors.get(typ, "#95a5a6"),
+            text=sub.apply(lambda r: f"{r['IRR下限(%)']:.0f}-{r['IRR上限(%)']:.0f}%", axis=1),
+            textposition="outside",
+        ))
+
+    fig.update_layout(
+        barmode="group",
+        yaxis_title="Equity IRR (%)",
+        xaxis_title="",
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=60, b=40),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_country_detail_card(p: CountryProfile):
+    """单个国家的详情卡片"""
+    st.markdown(f"### {p.country_name_cn} ({p.country_name})")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("货币", p.currency)
+    col2.metric("资本金比例", f"{p.typical_equity_ratio*100:.0f}%")
+    col3.metric("贷款利率", f"{p.typical_loan_rate*100:.1f}%")
+    col4.metric("企业所得税", f"{p.corporate_income_tax_rate*100:.1f}%")
+
+    col5, col6, col7, col8 = st.columns(4)
+    col5.metric("增值税", f"{p.vat_rate*100:.0f}%")
+    col6.metric("贷款期限", f"{p.typical_loan_term} 年")
+    if p.onshore_tariff_range != (0.0, 0.0):
+        col7.metric("陆上电价", f"{p.onshore_tariff_range[0]*100:.1f}-{p.onshore_tariff_range[1]*100:.1f} ¢/kWh")
+    else:
+        col7.metric("陆上电价", "—")
+    if p.offshore_tariff_range != (0.0, 0.0):
+        col8.metric("海上电价", f"{p.offshore_tariff_range[0]*100:.1f}-{p.offshore_tariff_range[1]*100:.1f} ¢/kWh")
+    else:
+        col8.metric("海上电价", "—")
+
+    if p.has_wind_tax_incentive:
+        st.info(f"💡 **税收优惠**: {p.tax_incentive_description}")
+
+    # ─── 市场基准数据表 ───
+    if p.benchmarks:
+        st.markdown("#### 📈 市场基准数据")
+        bm_rows = []
+        for b in p.benchmarks:
+            range_str = f"{b.value_low:.1f}%" if b.value_low == b.value_high else f"{b.value_low:.1f}% - {b.value_high:.1f}%"
+            source_str = f"[{b.source}]({b.source_url})" if b.source_url else b.source
+            bm_rows.append({
+                "指标": b.metric,
+                "项目类型": {"onshore": "陆上", "offshore": "海上", "nearshore": "近海", "all": "通用"}.get(b.project_type, b.project_type),
+                "数值范围": range_str,
+                "来源": source_str,
+                "年份": b.year,
+                "备注": b.note,
+            })
+        bm_df = pd.DataFrame(bm_rows)
+        st.dataframe(bm_df, use_container_width=True, hide_index=True)
+
+        # ─── 雷达图 ───
+        _render_radar_chart(p)
+    else:
+        st.warning("该国家暂无市场基准数据")
+
+    st.caption(f"数据更新: {p.data_updated}")
+
+
+def _render_radar_chart(p: CountryProfile):
+    """国家维度雷达图: IRR / WACC / 电价 / 税率 / 贷款利率"""
+    equity_irrs = [b for b in p.benchmarks if b.metric == "Equity IRR"]
+    wacc_list = [b for b in p.benchmarks if b.metric == "WACC"]
+
+    avg_irr = np.mean([(b.value_low + b.value_high) / 2 for b in equity_irrs]) if equity_irrs else 0
+    avg_wacc = np.mean([(b.value_low + b.value_high) / 2 for b in wacc_list]) if wacc_list else 0
+
+    on_tariff_mid = (p.onshore_tariff_range[0] + p.onshore_tariff_range[1]) / 2 * 100 if p.onshore_tariff_range != (0.0, 0.0) else 0
+    off_tariff_mid = (p.offshore_tariff_range[0] + p.offshore_tariff_range[1]) / 2 * 100 if p.offshore_tariff_range != (0.0, 0.0) else 0
+    tariff_mid = max(on_tariff_mid, off_tariff_mid)
+
+    categories = ["Equity IRR(%)", "WACC(%)", "电价(¢/kWh)", "所得税(%)", "贷款利率(%)"]
+    values = [avg_irr, avg_wacc, tariff_mid, p.corporate_income_tax_rate * 100, p.typical_loan_rate * 100]
+    values.append(values[0])
+    categories.append(categories[0])
+
+    fig = go.Figure(data=go.Scatterpolar(
+        r=values,
+        theta=categories,
+        fill="toself",
+        name=p.country_name_cn,
+        line_color="#3498db",
+    ))
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, max(values) * 1.2 if max(values) > 0 else 20])),
+        showlegend=False,
+        height=380,
+        margin=dict(t=30, b=30),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_summary_table(profiles: list):
+    """全部国家对比汇总表"""
+    rows = []
+    for p in profiles:
+        equity_irrs = [b for b in p.benchmarks if b.metric == "Equity IRR"]
+        wacc_list = [b for b in p.benchmarks if b.metric == "WACC"]
+        project_irrs = [b for b in p.benchmarks if b.metric == "Project IRR"]
+
+        def _range_str(blist):
+            if not blist:
+                return "—"
+            low = min(b.value_low for b in blist)
+            high = max(b.value_high for b in blist)
+            return f"{low:.1f}-{high:.1f}%"
+
+        on_tariff = f"{p.onshore_tariff_range[0]*100:.1f}-{p.onshore_tariff_range[1]*100:.1f}" if p.onshore_tariff_range != (0.0, 0.0) else "—"
+        off_tariff = f"{p.offshore_tariff_range[0]*100:.1f}-{p.offshore_tariff_range[1]*100:.1f}" if p.offshore_tariff_range != (0.0, 0.0) else "—"
+
+        rows.append({
+            "国家": p.country_name_cn,
+            "Equity IRR": _range_str(equity_irrs),
+            "Project IRR": _range_str(project_irrs),
+            "WACC": _range_str(wacc_list),
+            "陆上电价(¢/kWh)": on_tariff,
+            "海上电价(¢/kWh)": off_tariff,
+            "所得税": f"{p.corporate_income_tax_rate*100:.1f}%",
+            "贷款利率": f"{p.typical_loan_rate*100:.1f}%",
+            "资本金比例": f"{p.typical_equity_ratio*100:.0f}%",
+            "税收优惠": "✅" if p.has_wind_tax_incentive else "❌",
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True, height=450)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # 项目对比面板
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -1447,7 +1653,7 @@ def main():
     st.title("🌬️ 风电项目经济性评估")
     st.caption("Wind Farm Financial Assessment Dashboard | 多项目管理 & 对比 | 货币: USD")
 
-    page = st.tabs(["📈 项目评估", "📊 项目对比", "🗂️ 项目管理"])
+    page = st.tabs(["📈 项目评估", "📊 项目对比", "🗂️ 项目管理", "🌍 各国市场概览"])
 
     # ═══════════════════════════════════════════════════════
     # Tab 1: 项目评估（含侧边栏全分项编辑）
@@ -1512,6 +1718,12 @@ def main():
             render_full_assessment(dinp, dres, key_prefix=f"detail_{dpid}")
         else:
             _render_project_list()
+
+    # ═══════════════════════════════════════════════════════
+    # Tab 4: 各国市场概览
+    # ═══════════════════════════════════════════════════════
+    with page[3]:
+        render_market_overview()
 
 
 if __name__ == "__main__":
