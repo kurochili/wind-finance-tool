@@ -6,6 +6,7 @@ Wind Farm Financial Assessment Dashboard
 """
 
 import copy
+import io
 import json
 import os
 import time
@@ -234,10 +235,35 @@ def delete_project(pid: str):
 # 智能上传面板
 # ════════════════════════════════════════════════════════════════════════════
 
+def _generate_template_excel() -> bytes:
+    """生成 Excel 参考模板"""
+    buf = io.BytesIO()
+    data = {
+        "WTG Type": ["MySE8.5-230", "MySE10-242", "MySE16.X-260"],
+        "Units": [47, 40, 25],
+        "P90 [h/y]": [2070, 1944, 3200],
+        "发电量提升比例": ["-", "-5.95%", "+8.2%"],
+        "Electricity Tariff [USD/kWh]": [0.085, 0.085, 0.085],
+        "RNA [USD/kW]": [355, 397, 520],
+        "Tower [USD/kW]": [92, 53, 110],
+        "Transportation [USD/kW]": [63, 49, 75],
+        "Installation [USD/kW]": [101, 93, 130],
+        "TSI [USD/kW]": [611, 592, 835],
+        "BOP [USD/kW]": [839, 811, 650],
+        "CAPEX [USD/kW]": [1450, 1403, 1485],
+        "LCOE [USD/kWh]": ["", "", ""],
+    }
+    df = pd.DataFrame(data).T
+    df.columns = [f"方案{i+1}" for i in range(df.shape[1])]
+    df.index.name = "参数"
+    df.to_excel(buf, engine="openpyxl")
+    return buf.getvalue()
+
+
 def smart_upload_panel():
     """上传 Excel 或图片，自动提取参数并批量计算多方案"""
     st.markdown("### 📤 智能上传")
-    st.caption("上传含机型参数的 Excel 或截图，自动提取并计算")
+    st.caption("支持多方案自动识别 — 上传含 2~10 个机型的表格，系统自动提取每列为一个方案")
 
     if not _HAS_SMART_INPUT:
         st.error("智能输入模块尚未加载，请刷新页面重试。")
@@ -246,27 +272,53 @@ def smart_upload_panel():
     upload_type = st.radio("文件类型", ["Excel (.xlsx)", "图片截图"], horizontal=True, key="su_type")
 
     if upload_type.startswith("Excel"):
+        with st.expander("📋 Excel 格式说明 & 下载模板", expanded=False):
+            st.markdown("""
+**不需要严格模板！** 系统会自动识别以下关键字段行：
+
+| 必填字段 | 可选字段 |
+|---------|---------|
+| WTG Type (机型名) | RNA, Tower, Transportation |
+| Units (台数) | Installation, Tariff |
+| P90 (等效小时数) | LCOE |
+| TSI, BOP, CAPEX | 发电量提升比例 |
+
+**要求**：
+- 第一列是参数名，后续每列是一个方案（支持 2~10 个方案）
+- 表格中可有空行、标题行，系统会自动跳过
+- 数值支持逗号分隔(1,450)和百分号(-5.95%)
+            """)
+            tpl_bytes = _generate_template_excel()
+            st.download_button(
+                "📥 下载参考模板 Excel",
+                data=tpl_bytes,
+                file_name="wind_farm_input_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="su_tpl_dl",
+            )
+
         uploaded = st.file_uploader("上传 Excel 文件", type=["xlsx", "xls"], key="su_excel")
         if uploaded:
             variants = parse_excel(uploaded.read())
         else:
             variants = []
     else:
+        st.info("支持截图自动识别：系统通过 OCR 读取表格中的数值，按列自动区分多个方案。建议截图清晰、表格规整。")
         uploaded = st.file_uploader("上传截图", type=["png", "jpg", "jpeg"], key="su_img")
         if uploaded:
             st.image(uploaded, caption="上传的截图", use_container_width=True)
             uploaded.seek(0)
             variants = parse_image(uploaded.read())
             if not variants:
-                st.warning("OCR 未能提取参数。请尝试 Excel 上传或手动输入。")
+                st.warning("OCR 未能提取参数。建议改用 Excel 上传（更可靠）或手动输入。")
         else:
             variants = []
 
     if not variants:
-        st.info("请上传文件。支持的 Excel 格式：含 WTG Type / Units / P90 / TSI / BOP / CAPEX 列的表格。")
         return None
 
-    st.success(f"成功提取 **{len(variants)}** 个方案")
+    st.success(f"成功提取 **{len(variants)}** 个方案：" +
+               " vs ".join(v.get("wtg_type", f"方案{i+1}") for i, v in enumerate(variants)))
 
     countries = list_countries()
     country_options = {f"{cn} ({en})": en for en, cn in countries}
