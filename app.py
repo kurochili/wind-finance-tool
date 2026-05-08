@@ -349,6 +349,11 @@ def smart_upload_panel():
         loan_rate = col5.number_input("贷款利率", 0.01, 0.20, loan_rate, step=0.005, format="%.3f", key="su_lr")
         loan_term = col6.number_input("贷款期限(年)", 5, 25, loan_term, key="su_lt")
 
+    with st.expander("📝 项目概况 (选填，导出PPT时展示)", expanded=False):
+        su_pi_loc = st.text_input("项目地点", value="", placeholder="如：越南河静省 (Ha Tinh Province)", key="su_pi_loc")
+        su_pi_tariff = st.text_input("电价来源", value="", placeholder="如：Decision 1508/QĐ-BCT (2025.05.30)", key="su_pi_tariff")
+        su_pi_desc = st.text_area("项目说明/备注", value="", placeholder="如：近海风电(Nearshore)，2机型对比方案", height=68, key="su_pi_desc")
+
     if profile and profile.has_wind_tax_incentive:
         tax_holiday = profile.income_tax_holiday
     else:
@@ -1021,8 +1026,10 @@ def plot_sensitivity(inputs: WindFarmFinancialInputs):
     st.plotly_chart(fig, use_container_width=True)
 
 
-def generate_ppt_bytes(inputs: WindFarmFinancialInputs, result: CalculationResult) -> bytes:
-    """生成单项目经济性评估 PPT，返回二进制内容"""
+def generate_ppt_bytes(inputs: WindFarmFinancialInputs, result: CalculationResult,
+                       project_info: Optional[dict] = None) -> bytes:
+    """生成单项目经济性评估 PPT，返回二进制内容。
+    project_info 可选，含 location/tariff_source/description 等自定义项目概况。"""
     from io import BytesIO
     from pptx import Presentation
     from pptx.util import Inches, Pt
@@ -1112,18 +1119,22 @@ def generate_ppt_bytes(inputs: WindFarmFinancialInputs, result: CalculationResul
     tariff_usd = inputs.tax_financial.tariff_with_tax
     tariff_notax = inputs.tax_financial.tariff_without_tax
 
-    info_items = [
-        ("项目名称", inputs.basic.project_name),
-        ("项目类型", f"{project_type_cn}风电 ({inputs.basic.project_type})"),
-        ("国家/地区", inputs.basic.country),
-        ("装机容量", f"{inputs.basic.num_turbines}台×{inputs.basic.turbine_capacity_mw}MW = {inputs.capacity_mw:.0f}MW"),
-        ("P90小时数", f"{inputs.basic.full_load_hours} h"),
-        ("电价(含税)", f"{tariff_usd:.5f} USD/kWh"),
-        ("电价(不含税)", f"{tariff_notax:.5f} USD/kWh"),
-        ("建设/运营", f"{inputs.basic.construction_months}个月 / {inputs.operational.operation_years}年"),
-        ("融资结构", f"资本金{inputs.financing.equity_ratio:.0%} | 利率{inputs.financing.long_term_loan_rate:.2%} | {inputs.financing.loan_term_years}年"),
-        ("所得税", f"{inputs.tax_financial.income_tax_rate:.0%}"),
-    ]
+    pi = project_info or {}
+    info_items = []
+    if pi.get("location"):
+        info_items.append(("项目地点", pi["location"]))
+    info_items.append(("项目类型", f"{project_type_cn}风电 ({inputs.basic.project_type})"))
+    info_items.append(("装机容量", f"{inputs.basic.num_turbines}台×{inputs.basic.turbine_capacity_mw}MW = {inputs.capacity_mw:.0f}MW"))
+    info_items.append(("P90小时数", f"{inputs.basic.full_load_hours} h"))
+    if pi.get("tariff_source"):
+        info_items.append(("电价来源", pi["tariff_source"]))
+    info_items.append(("电价(含税)", f"{tariff_usd:.5f} USD/kWh"))
+    info_items.append(("电价(不含税)", f"{tariff_notax:.5f} USD/kWh"))
+    info_items.append(("建设/运营", f"{inputs.basic.construction_months}个月 / {inputs.operational.operation_years}年"))
+    info_items.append(("融资结构", f"资本金{inputs.financing.equity_ratio:.0%} | 利率{inputs.financing.long_term_loan_rate:.2%} | {inputs.financing.loan_term_years}年"))
+    info_items.append(("所得税", f"{inputs.tax_financial.income_tax_rate:.0%}"))
+    if pi.get("description"):
+        info_items.append(("项目说明", pi["description"]))
 
     y = Y0 + Inches(0.4)
     for lb, vl in info_items:
@@ -1219,8 +1230,10 @@ def generate_ppt_bytes(inputs: WindFarmFinancialInputs, result: CalculationResul
 def generate_comparison_ppt_bytes(
     inputs1: WindFarmFinancialInputs, result1: CalculationResult,
     inputs2: WindFarmFinancialInputs, result2: CalculationResult,
+    project_info: Optional[dict] = None,
 ) -> bytes:
-    """生成两项目对比 PPT，返回二进制内容"""
+    """生成两项目对比 PPT，返回二进制内容。
+    project_info 可选，含 location/tariff_source/description 等自定义项目概况。"""
     from io import BytesIO
     from pptx import Presentation
     from pptx.util import Inches, Pt
@@ -1316,16 +1329,21 @@ def generate_comparison_ppt_bytes(
     tariff1_notax = inputs1.tax_financial.tariff_without_tax
     tariff2_notax = inputs2.tax_financial.tariff_without_tax
 
-    info_items = [
-        ("方案A", name1),
-        ("方案B", name2),
-        ("装机容量A", f"{inputs1.basic.num_turbines}台×{inputs1.basic.turbine_capacity_mw}MW = {inputs1.capacity_mw:.0f}MW"),
-        ("装机容量B", f"{inputs2.basic.num_turbines}台×{inputs2.basic.turbine_capacity_mw}MW = {inputs2.capacity_mw:.0f}MW"),
-        ("电价A(含税)", f"{tariff1:.5f} USD/kWh"),
-        ("电价B(含税)", f"{tariff2:.5f} USD/kWh"),
-        ("建设/运营", f"{inputs1.basic.construction_months}个月 / {inputs1.operational.operation_years}年"),
-        ("融资结构", f"资本金{inputs1.financing.equity_ratio:.0%} | 利率{inputs1.financing.long_term_loan_rate:.2%}"),
-    ]
+    pi = project_info or {}
+    info_items = []
+    if pi.get("location"):
+        info_items.append(("项目地点", pi["location"]))
+    info_items.append(("方案A", name1))
+    info_items.append(("方案B", name2))
+    info_items.append(("装机容量A", f"{inputs1.basic.num_turbines}台×{inputs1.basic.turbine_capacity_mw}MW = {inputs1.capacity_mw:.0f}MW"))
+    info_items.append(("装机容量B", f"{inputs2.basic.num_turbines}台×{inputs2.basic.turbine_capacity_mw}MW = {inputs2.capacity_mw:.0f}MW"))
+    if pi.get("tariff_source"):
+        info_items.append(("电价来源", pi["tariff_source"]))
+    info_items.append(("电价(含税)", f"{tariff1:.5f} / {tariff2:.5f} USD/kWh"))
+    info_items.append(("建设/运营", f"{inputs1.basic.construction_months}个月 / {inputs1.operational.operation_years}年"))
+    info_items.append(("融资结构", f"资本金{inputs1.financing.equity_ratio:.0%} | 利率{inputs1.financing.long_term_loan_rate:.2%}"))
+    if pi.get("description"):
+        info_items.append(("项目说明", pi["description"]))
 
     y = Y0 + Inches(0.4)
     for lb, vl in info_items:
@@ -1668,8 +1686,20 @@ def render_full_assessment(inputs: WindFarmFinancialInputs, result: CalculationR
         use_container_width=True, height=400,
     )
 
-    # 导出按钮
+    # 项目概况(PPT用) + 导出按钮
     st.markdown("---")
+    with st.expander("📝 PPT 项目概况 (选填，导出 PPT 时展示)", expanded=False):
+        _pi_loc = st.text_input("项目地点", value="", placeholder="如：越南河静省 (Ha Tinh Province)", key=f"{key_prefix}_pi_loc")
+        _pi_tariff = st.text_input("电价来源", value="", placeholder="如：Decision 1508/QĐ-BCT (2025.05.30)", key=f"{key_prefix}_pi_tariff")
+        _pi_desc = st.text_area("项目说明/备注", value="", placeholder="如：近海风电(Nearshore)，2机型对比方案", height=68, key=f"{key_prefix}_pi_desc")
+    _project_info = {}
+    if _pi_loc:
+        _project_info["location"] = _pi_loc
+    if _pi_tariff:
+        _project_info["tariff_source"] = _pi_tariff
+    if _pi_desc:
+        _project_info["description"] = _pi_desc
+
     dl_col1, dl_col2 = st.columns(2)
     with dl_col1:
         excel_bytes = export_to_excel(inputs, result)
@@ -1680,7 +1710,7 @@ def render_full_assessment(inputs: WindFarmFinancialInputs, result: CalculationR
             key=f"{key_prefix}_dl_excel",
         )
     with dl_col2:
-        ppt_bytes = generate_ppt_bytes(inputs, result)
+        ppt_bytes = generate_ppt_bytes(inputs, result, project_info=_project_info or None)
         st.download_button(
             "📥 下载 PPT 报告", data=ppt_bytes,
             file_name=f"{inputs.basic.project_name}_经济性评估.pptx",
@@ -2091,9 +2121,23 @@ def comparison_page():
     if len(selected) == 2:
         p1 = projects[selected[0]]
         p2 = projects[selected[1]]
+
+        with st.expander("📝 对比 PPT 项目概况 (选填)", expanded=False):
+            _cpi_loc = st.text_input("项目地点", value="", placeholder="如：越南河静省", key="cpi_loc")
+            _cpi_tariff = st.text_input("电价来源", value="", placeholder="如：Decision 1508", key="cpi_tariff")
+            _cpi_desc = st.text_area("项目说明", value="", placeholder="如：近海风电 2机型对比", height=68, key="cpi_desc")
+        _cpi = {}
+        if _cpi_loc:
+            _cpi["location"] = _cpi_loc
+        if _cpi_tariff:
+            _cpi["tariff_source"] = _cpi_tariff
+        if _cpi_desc:
+            _cpi["description"] = _cpi_desc
+
         ppt_bytes = generate_comparison_ppt_bytes(
             p1["inputs"], p1["result"],
             p2["inputs"], p2["result"],
+            project_info=_cpi or None,
         )
         fname = f"{p1['name']}_vs_{p2['name']}_对比.pptx"
         st.download_button(
