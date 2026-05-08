@@ -301,3 +301,75 @@ def _extract_numbers_from_line(line: str) -> List[float]:
         if num is not None:
             results.append(num)
     return results
+
+
+# ---------------------------------------------------------------------------
+# 3. 国家/地区自动检测
+# ---------------------------------------------------------------------------
+
+_COUNTRY_KEYWORDS: Dict[str, List[str]] = {
+    "Vietnam":      ["vietnam", "viet nam", "越南", "vnđ", "vnd", "ha tinh", "hà tĩnh",
+                     "soc trang", "sóc trăng", "binh thuan", "bình thuận", "quang tri",
+                     "quảng trị", "decision 1508", "qđ-bct", "nearshore"],
+    "Philippines":  ["philippines", "菲律宾", "php", "laguna", "luzon", "visayas",
+                     "mindanao", "doe", "feed-in tariff"],
+    "China":        ["china", "中国", "cny", "rmb", "人民币", "广东", "江苏", "浙江",
+                     "山东", "福建", "上海", "guangdong", "jiangsu", "zhejiang",
+                     "shandong", "fujian", "海上风电"],
+    "Thailand":     ["thailand", "泰国", "thb", "baht", "กรุงเทพ"],
+    "Indonesia":    ["indonesia", "印尼", "印度尼西亚", "idr", "rupiah", "java", "sulawesi",
+                     "sumatra", "kalimantan"],
+    "Malaysia":     ["malaysia", "马来西亚", "myr", "ringgit", "sabah", "sarawak"],
+    "Cambodia":     ["cambodia", "柬埔寨", "khr", "riel", "phnom penh"],
+    "Japan":        ["japan", "日本", "jpy", "yen", "円", "hokkaido", "北海道",
+                     "秋田", "akita", "千葉", "chiba"],
+    "South Korea":  ["korea", "韩国", "krw", "won", "원", "jeju", "전남", "전북"],
+    "Australia":    ["australia", "澳大利亚", "澳洲", "aud", "nsw", "victoria",
+                     "queensland", "south australia"],
+    "Taiwan":       ["taiwan", "台湾", "twd", "彰化", "changhua", "竹南",
+                     "zhunan", "苗栗", "miaoli"],
+}
+
+
+def detect_country(text: str, filename: str = "") -> Optional[str]:
+    """从文本内容和文件名中推断国家/地区。
+
+    Parameters
+    ----------
+    text : str
+        Excel 原始文本 / OCR 文本 / 所有单元格拼接文本
+    filename : str
+        上传的文件名
+
+    Returns
+    -------
+    str or None
+        匹配到的国家英文名（与 country_profiles 中一致），未命中则 None
+    """
+    combined = (filename + " " + text).lower()
+    scores: Dict[str, int] = {}
+    for country, keywords in _COUNTRY_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw.lower() in combined)
+        if score > 0:
+            scores[country] = score
+    if not scores:
+        return None
+    return max(scores, key=scores.get)
+
+
+def detect_country_from_excel(file_bytes: bytes, filename: str = "") -> Optional[str]:
+    """从 Excel 文件中提取全部文本进行国家检测。"""
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes), header=None, engine="openpyxl")
+    except Exception:
+        try:
+            df = pd.read_excel(io.BytesIO(file_bytes), header=None)
+        except Exception:
+            return detect_country("", filename)
+    all_text = " ".join(str(v) for v in df.values.flatten() if pd.notna(v))
+    return detect_country(all_text, filename)
+
+
+def detect_country_from_image_text(ocr_text: str, filename: str = "") -> Optional[str]:
+    """从 OCR 文本中检测国家。"""
+    return detect_country(ocr_text, filename)
