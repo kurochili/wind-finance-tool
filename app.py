@@ -2704,7 +2704,6 @@ def main():
     # ── 顶部标题 + 明阳 logo ──
     _logo_dir = os.path.dirname(os.path.abspath(__file__))
     _my_logo = os.path.join(_logo_dir, "mingyang_logo.png")
-    _cat_svg = os.path.join(_logo_dir, "author_cat_logo.svg")
 
     # 明阳 logo — 侧边栏顶部，留白避开顶栏
     st.sidebar.markdown("<div style='margin-top:2.5rem'></div>", unsafe_allow_html=True)
@@ -2715,15 +2714,39 @@ def main():
     st.title("🌬️ 风电项目经济性评估")
     st.caption("Wind Farm Financial Assessment Dashboard | 多项目管理 & 对比 | 货币: USD")
 
-    # ── 侧边栏底部：作者信息（SVG 矢量猫 + 文字） ──
+    # ── 侧边栏底部：作者信息（内嵌 SVG 矢量猫 + 文字） ──
     st.sidebar.markdown("---")
-    _cat_html = ""
-    if os.path.exists(_cat_svg):
-        with open(_cat_svg, "r", encoding="utf-8") as f:
-            _cat_html = f.read()
+    _cat_svg_inline = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="56" height="56">'
+        '<polygon points="40,85 60,20 85,75" fill="#1a1a1a"/>'
+        '<polygon points="160,85 140,20 115,75" fill="#1a1a1a"/>'
+        '<polygon points="50,80 65,32 82,72" fill="#2a2a2a"/>'
+        '<polygon points="150,80 135,32 118,72" fill="#2a2a2a"/>'
+        '<ellipse cx="100" cy="105" rx="65" ry="55" fill="#1a1a1a"/>'
+        '<ellipse cx="72" cy="100" rx="20" ry="22" fill="#fff"/>'
+        '<ellipse cx="128" cy="100" rx="20" ry="22" fill="#fff"/>'
+        '<ellipse cx="75" cy="102" rx="14" ry="16" fill="#111"/>'
+        '<ellipse cx="125" cy="102" rx="14" ry="16" fill="#111"/>'
+        '<circle cx="80" cy="95" r="5" fill="#fff"/>'
+        '<circle cx="130" cy="95" r="5" fill="#fff"/>'
+        '<circle cx="72" cy="105" r="2.5" fill="#fff"/>'
+        '<circle cx="122" cy="105" r="2.5" fill="#fff"/>'
+        '<ellipse cx="100" cy="120" rx="4" ry="3" fill="#333"/>'
+        '<path d="M92,125 Q96,132 100,125" fill="none" stroke="#333" stroke-width="1.5" stroke-linecap="round"/>'
+        '<path d="M100,125 Q104,132 108,125" fill="none" stroke="#333" stroke-width="1.5" stroke-linecap="round"/>'
+        '<line x1="30" y1="108" x2="62" y2="115" stroke="#444" stroke-width="1.2"/>'
+        '<line x1="28" y1="118" x2="60" y2="120" stroke="#444" stroke-width="1.2"/>'
+        '<line x1="32" y1="128" x2="63" y2="124" stroke="#444" stroke-width="1.2"/>'
+        '<line x1="170" y1="108" x2="138" y2="115" stroke="#444" stroke-width="1.2"/>'
+        '<line x1="172" y1="118" x2="140" y2="120" stroke="#444" stroke-width="1.2"/>'
+        '<line x1="168" y1="128" x2="137" y2="124" stroke="#444" stroke-width="1.2"/>'
+        '<ellipse cx="100" cy="170" rx="45" ry="30" fill="#1a1a1a"/>'
+        '<path d="M145,168 Q170,155 165,135 Q162,125 155,130" fill="none" stroke="#1a1a1a" stroke-width="10" stroke-linecap="round"/>'
+        '</svg>'
+    )
     st.sidebar.markdown(
         "<div style='display:flex;align-items:center;gap:10px;padding:4px 0'>"
-        f"<div style='width:56px;min-width:56px'>{_cat_html}</div>"
+        f"<div style='width:56px;min-width:56px'>{_cat_svg_inline}</div>"
         "<div style='color:#888;line-height:1.4;font-size:0.9rem'>"
         "<b>MingYang Wind Tool</b><br>"
         "Built by kurochilli</div>"
