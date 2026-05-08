@@ -2529,8 +2529,32 @@ def _render_project_list():
 # ════════════════════════════════════════════════════════════════════════════
 
 def main():
-    st.title("🌬️ 风电项目经济性评估")
-    st.caption("Wind Farm Financial Assessment Dashboard | 多项目管理 & 对比 | 货币: USD")
+    # ── 顶部标题 + 明阳 logo ──
+    _logo_dir = os.path.dirname(os.path.abspath(__file__))
+    _my_logo = os.path.join(_logo_dir, "mingyang_logo.png")
+    _cat_logo = os.path.join(_logo_dir, "author_cat_logo.png")
+
+    _hdr_left, _hdr_right = st.columns([5, 1])
+    with _hdr_left:
+        st.title("🌬️ 风电项目经济性评估")
+        st.caption("Wind Farm Financial Assessment Dashboard | Powered by **MINGYANG** | 货币: USD")
+    with _hdr_right:
+        if os.path.exists(_my_logo):
+            st.image(_my_logo, width=160)
+
+    # ── 侧边栏底部：作者信息 ──
+    st.sidebar.markdown("---")
+    _sb_cols = st.sidebar.columns([1, 4])
+    with _sb_cols[0]:
+        if os.path.exists(_cat_logo):
+            st.image(_cat_logo, width=38)
+    with _sb_cols[1]:
+        st.markdown(
+            "<small style='color:#888;line-height:1.3'>"
+            "<b>MingYang Wind Tool</b><br>"
+            "Built with Cursor AI</small>",
+            unsafe_allow_html=True,
+        )
 
     page = st.tabs(["📈 项目评估", "📊 项目对比", "🗂️ 项目管理", "🌍 各国市场概览"])
 
