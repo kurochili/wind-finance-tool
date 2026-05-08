@@ -2552,7 +2552,7 @@ def main():
         st.markdown(
             "<small style='color:#888;line-height:1.3'>"
             "<b>MingYang Wind Tool</b><br>"
-            "Built with Cursor AI</small>",
+            "Built by kurochilli</small>",
             unsafe_allow_html=True,
         )
 
