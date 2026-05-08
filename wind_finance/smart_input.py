@@ -189,34 +189,48 @@ def _is_empty_col(df: pd.DataFrame, col: int, start_row: int) -> bool:
 # 2. 图片 OCR 解析
 # ---------------------------------------------------------------------------
 
-def parse_image(image_bytes: bytes) -> List[Dict]:
+def parse_image(image_bytes: bytes) -> tuple:
     """用 OCR 从截图中提取风电项目参数。
-
-    依赖 pytesseract 和 Pillow，如果环境不可用则返回空列表。
-
-    Parameters
-    ----------
-    image_bytes : bytes
-        图片的二进制内容（PNG / JPG 等）
 
     Returns
     -------
-    list[dict]
-        每个机型方案对应一个字典
+    tuple(list[dict], str, str)
+        (方案列表, OCR原始文本, 错误信息)
+        如果成功: (variants, ocr_text, "")
+        如果失败: ([], "", error_message)
     """
     try:
         from PIL import Image
+    except ImportError:
+        return [], "", "Pillow 未安装，无法处理图片"
+
+    try:
         import pytesseract
     except ImportError:
-        return []
+        return [], "", "pytesseract 未安装。请确认 packages.txt 包含 tesseract-ocr"
 
     try:
         img = Image.open(io.BytesIO(image_bytes))
-        text = pytesseract.image_to_string(img, lang="eng+chi_sim")
-    except Exception:
-        return []
+    except Exception as e:
+        return [], "", f"图片打开失败: {e}"
 
-    return _parse_ocr_text(text)
+    try:
+        text = pytesseract.image_to_string(img, lang="eng+chi_sim")
+    except Exception as e:
+        err_str = str(e)
+        if "chi_sim" in err_str:
+            try:
+                text = pytesseract.image_to_string(img, lang="eng")
+            except Exception as e2:
+                return [], "", f"OCR 失败 (eng fallback): {e2}"
+        else:
+            return [], "", f"OCR 失败: {e}"
+
+    if not text or not text.strip():
+        return [], "", "OCR 未识别到任何文字。建议检查图片是否清晰、是否为截图格式。"
+
+    variants = _parse_ocr_text(text)
+    return variants, text, ""
 
 
 def _parse_ocr_text(text: str) -> List[Dict]:
