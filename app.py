@@ -1366,7 +1366,7 @@ def _render_country_detail_card(p: CountryProfile):
         st.info(f"💡 **税收优惠**: {p.tax_incentive_description}")
 
     # ─── 分板块市场报告 ───
-    rpt = p.market_report
+    rpt = getattr(p, "market_report", None)
     has_report = rpt and (rpt.official_benchmarks or rpt.bnef_hurdles
                           or rpt.actual_cases or rpt.wacc_data or rpt.summary)
 
