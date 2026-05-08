@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- 35 -->
+  <polygon points="40,85 60,20 85,75" fill="#1a1a1a"/>
+  <polygon points="160,85 140,20 115,75" fill="#1a1a1a"/>
+  <polygon points="50,80 65,32 82,72" fill="#2a2a2a"/>
+  <polygon points="150,80 135,32 118,72" fill="#2a2a2a"/>
+  <!-- 4 -->
+  <ellipse cx="100" cy="105" rx="65" ry="55" fill="#1a1a1a"/>
+  <!-- <} -->
+  <ellipse cx="72" cy="100" rx="20" ry="22" fill="#ffffff"/>
+  <ellipse cx="128" cy="100" rx="20" ry="22" fill="#ffffff"/>
+  <!-- ³T -->
+  <ellipse cx="75" cy="102" rx="14" ry="16" fill="#111111"/>
+  <ellipse cx="125" cy="102" rx="14" ry="16" fill="#111111"/>
+  <!-- ³TØI -->
+  <circle cx="80" cy="95" r="5" fill="#ffffff"/>
+  <circle cx="130" cy="95" r="5" fill="#ffffff"/>
+  <circle cx="72" cy="105" r="2.5" fill="#ffffff"/>
+  <circle cx="122" cy="105" r="2.5" fill="#ffffff"/>
+  <!-- ;P -->
+  <ellipse cx="100" cy="120" rx="4" ry="3" fill="#333333"/>
+  <!-- 4ô -->
+  <path d="M92,125 Q96,132 100,125" fill="none" stroke="#333" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M100,125 Q104,132 108,125" fill="none" stroke="#333" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- á{ -->
+  <line x1="30" y1="108" x2="62" y2="115" stroke="#444" stroke-width="1.2"/>
+  <line x1="28" y1="118" x2="60" y2="120" stroke="#444" stroke-width="1.2"/>
+  <line x1="32" y1="128" x2="63" y2="124" stroke="#444" stroke-width="1.2"/>
+  <line x1="170" y1="108" x2="138" y2="115" stroke="#444" stroke-width="1.2"/>
+  <line x1="172" y1="118" x2="140" y2="120" stroke="#444" stroke-width="1.2"/>
+  <line x1="168" y1="128" x2="137" y2="124" stroke="#444" stroke-width="1.2"/>
+  <!-- «S -->
+  <ellipse cx="100" cy="170" rx="45" ry="30" fill="#1a1a1a"/>
+  <!-- >ô -->
+  <path d="M145,168 Q170,155 165,135 Q162,125 155,130" fill="none" stroke="#1a1a1a" stroke-width="10" stroke-linecap="round"/>
+</svg>
