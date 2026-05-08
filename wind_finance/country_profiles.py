@@ -73,16 +73,16 @@ _register(CountryProfile(
     income_tax_holiday=(1, 3, 0.0, 4, 6, 0.125),
     urban_maintenance_tax_rate=0.05,
     education_surcharge_rate=0.05,
-    onshore_tariff_range=(0.035, 0.055),
-    offshore_tariff_range=(0.055, 0.075),
-    data_updated="2025-01",
+    onshore_tariff_range=(0.027, 0.058),
+    offshore_tariff_range=(0.056, 0.078),
+    data_updated="2026-02",
 ))
 
 _register(CountryProfile(
     country_name="Vietnam",
     country_name_cn="越南",
     currency="VND",
-    exchange_rate_to_usd=25400,
+    exchange_rate_to_usd=25700,
     typical_equity_ratio=0.30,
     typical_loan_rate=0.08,
     typical_loan_term=15,
@@ -91,9 +91,9 @@ _register(CountryProfile(
     has_wind_tax_incentive=True,
     tax_incentive_description="企业所得税4免9减半; 进口设备免增值税",
     income_tax_holiday=(1, 4, 0.0, 5, 13, 0.10),
-    onshore_tariff_range=(0.065, 0.085),
-    offshore_tariff_range=(0.080, 0.098),
-    data_updated="2025-01",
+    onshore_tariff_range=(0.070, 0.076),
+    offshore_tariff_range=(0.077, 0.085),
+    data_updated="2025-05",
 ))
 
 _register(CountryProfile(
@@ -127,9 +127,9 @@ _register(CountryProfile(
     has_wind_tax_incentive=True,
     tax_incentive_description="BOI优惠: 最长8年企业所得税免征; 进口设备免关税",
     income_tax_holiday=(1, 8, 0.0, 9, 13, 0.10),
-    onshore_tariff_range=(0.060, 0.090),
+    onshore_tariff_range=(0.075, 0.089),
     offshore_tariff_range=(0.0, 0.0),
-    data_updated="2025-01",
+    data_updated="2025-06",
 ))
 
 _register(CountryProfile(
@@ -143,11 +143,11 @@ _register(CountryProfile(
     corporate_income_tax_rate=0.22,
     vat_rate=0.11,
     has_wind_tax_incentive=True,
-    tax_incentive_description="可再生能源进口设备免增值税; 加速折旧",
+    tax_incentive_description="MEMR 5/2025: BOO模式; 可再生能源进口设备免增值税; 加速折旧; PPA最长30年",
     income_tax_holiday=(1, 5, 0.0, 6, 10, 0.11),
     onshore_tariff_range=(0.065, 0.095),
     offshore_tariff_range=(0.0, 0.0),
-    data_updated="2025-01",
+    data_updated="2025-03",
 ))
 
 _register(CountryProfile(
@@ -215,11 +215,11 @@ _register(CountryProfile(
     corporate_income_tax_rate=0.242,
     vat_rate=0.10,
     has_wind_tax_incentive=True,
-    tax_incentive_description="REC制度; RPS义务比例",
+    tax_incentive_description="REC制度; RPS义务比例; 固定价格合约竞标",
     income_tax_holiday=(1, 1, 0.242, 1, 1, 0.242),
     onshore_tariff_range=(0.080, 0.120),
-    offshore_tariff_range=(0.150, 0.220),
-    data_updated="2025-01",
+    offshore_tariff_range=(0.127, 0.175),
+    data_updated="2026-04",
 ))
 
 _register(CountryProfile(
@@ -251,11 +251,11 @@ _register(CountryProfile(
     corporate_income_tax_rate=0.20,
     vat_rate=0.05,
     has_wind_tax_incentive=True,
-    tax_incentive_description="FIT制度; 加速折旧; 投资抵减",
+    tax_incentive_description="FIT制度(2025: 4.5085TWD/kWh 20年); 加速折旧; 投资抵减",
     income_tax_holiday=(1, 5, 0.0, 6, 10, 0.10),
     onshore_tariff_range=(0.065, 0.085),
-    offshore_tariff_range=(0.125, 0.165),
-    data_updated="2025-01",
+    offshore_tariff_range=(0.106, 0.161),
+    data_updated="2025-12",
 ))
 
 
