@@ -470,6 +470,43 @@ def smart_upload_panel():
         loan_rate = col5.number_input("贷款利率", 0.01, 0.20, loan_rate, step=0.005, format="%.3f", key="su_lr")
         loan_term = col6.number_input("贷款期限(年)", 5, 25, loan_term, key="su_lt")
 
+    # ── 运维算法选择（Smart Upload模式） ──
+    _su_om_def = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
+    _su_rec = _su_om_def.recommended_method
+    _su_om_opts = {v: k for k, v in OM_METHOD_LABELS.items()}
+    _su_rec_label = OM_METHOD_LABELS.get(_su_rec, "Fixed Escalation")
+    with st.expander("🔧 运维算法选择", expanded=False):
+        _su_om_display = st.selectbox(
+            "O&M Algorithm",
+            list(OM_METHOD_LABELS.values()),
+            index=list(OM_METHOD_LABELS.keys()).index(_su_rec) if _su_rec in OM_METHOD_LABELS else 1,
+            key="su_om_method_sel",
+        )
+        _su_om_method_sel = _su_om_opts[_su_om_display]
+        st.caption(f"Recommended for {sel_country}: **{_su_rec_label}**")
+        st.caption(OM_METHOD_DESCRIPTIONS.get(_su_om_method_sel, ""))
+
+        _su_base_def = _su_om_def.offshore_base_om if is_offshore else _su_om_def.onshore_base_om
+        _su_esc_def2 = _su_om_def.escalation_rate
+        _su_cpx_def2 = _su_om_def.offshore_capex_pct if is_offshore else _su_om_def.onshore_capex_pct
+
+        _su_base_val = _su_base_def
+        _su_esc_val = _su_esc_def2
+        _su_cpx_val = _su_cpx_def2
+        _su_ct_periods = [(1,5,15.0),(6,10,22.0),(11,oper_years,28.0)]
+
+        if _su_om_method_sel == "fixed_escalation":
+            _su_base_val = st.number_input("Base O&M (USD/kW/yr)", 5.0, 100.0, float(_su_base_def), step=1.0, key="su_fe_base")
+            _su_esc_val = st.number_input("Annual escalation (%)", 0.0, 10.0, float(_su_esc_def2*100), step=0.5, key="su_fe_esc") / 100.0
+        elif _su_om_method_sel == "capex_percentage":
+            _su_cpx_val = st.number_input("Annual O&M (% of CAPEX)", 0.5, 10.0, float(_su_cpx_def2*100), step=0.1, key="su_cp_pct") / 100.0
+        elif _su_om_method_sel == "contract":
+            st.caption("Define cost by period (USD/kW/yr)")
+            _su_ct1 = st.number_input("Yr 1-5", 5.0, 100.0, 15.0, key="su_ct1")
+            _su_ct2 = st.number_input("Yr 6-10", 5.0, 100.0, 22.0, key="su_ct2")
+            _su_ct3 = st.number_input("Yr 11+", 5.0, 100.0, 28.0, key="su_ct3")
+            _su_ct_periods = [(1,5,_su_ct1),(6,10,_su_ct2),(11,oper_years,_su_ct3)]
+
     with st.expander("📝 项目概况 (选填，导出PPT时展示)", expanded=False):
         su_pi_loc = st.text_input("项目地点", value="", placeholder="如：越南河静省 (Ha Tinh Province)", key="su_pi_loc")
         su_pi_tariff = st.text_input("电价来源", value="", placeholder="如：Decision 1508/QĐ-BCT (2025.05.30)", key="su_pi_tariff")
@@ -587,18 +624,14 @@ def smart_upload_panel():
                 maintenance_rates=[(1,5,0.005),(6,10,0.01),(11,15,0.015),(16,20,0.02),(21,25,0.025)],
             )
             offshore_extra = OffshoreExtraCost(requires_sov=False, sea_area_usage_fee=43.0) if is_offshore else None
-            _su_om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
-            _su_om_method = _su_om_d.recommended_method
-            _su_base_om = _su_om_d.offshore_base_om if is_offshore else _su_om_d.onshore_base_om
-            _su_esc = _su_om_d.escalation_rate
-            _su_capex_pct = _su_om_d.offshore_capex_pct if is_offshore else _su_om_d.onshore_capex_pct
             operational = OperationalCost(
-                om_method=_su_om_method,
+                om_method=_su_om_method_sel,
                 staff_count=35 if is_offshore else 15, salary_per_person=3.5 if is_offshore else 1.0,
                 welfare_rate=0.40, insurance_rate=0.0035, depreciation_years=20, residual_rate=0.0,
                 operation_years=oper_years, warranty=warranty, post_warranty=post_warranty,
-                base_om_per_kw=_su_base_om, om_escalation_rate=_su_esc,
-                capex_om_percentage=_su_capex_pct,
+                base_om_per_kw=_su_base_val, om_escalation_rate=_su_esc_val,
+                capex_om_percentage=_su_cpx_val,
+                contract_om_periods=_su_ct_periods,
                 offshore_extra=offshore_extra,
             )
             tax_financial = TaxAndFinancial(
@@ -718,6 +751,51 @@ def sidebar_inputs_quick() -> WindFarmFinancialInputs:
     else:
         tax_holiday = (1, 3, 0.0, 4, 6, cit / 2.0)
 
+    # ── 运维算法选择（Quick模式也可切换） ──
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### O&M Method")
+    _om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
+    _q_rec = _om_d.recommended_method
+    _q_om_opts = {v: k for k, v in OM_METHOD_LABELS.items()}
+    _q_rec_label = OM_METHOD_LABELS.get(_q_rec, "Fixed Escalation")
+    _q_om_display = st.sidebar.selectbox(
+        "O&M Algorithm",
+        list(OM_METHOD_LABELS.values()),
+        index=list(OM_METHOD_LABELS.keys()).index(_q_rec) if _q_rec in OM_METHOD_LABELS else 1,
+        key="q_om_method_sel",
+    )
+    _q_om_method_sel = _q_om_opts[_q_om_display]
+    st.sidebar.caption(f"Recommended for {selected_display}: **{_q_rec_label}**")
+    st.sidebar.caption(OM_METHOD_DESCRIPTIONS.get(_q_om_method_sel, ""))
+
+    _q_base_om_def = _om_d.offshore_base_om if is_offshore else _om_d.onshore_base_om
+    _q_esc_def = _om_d.escalation_rate
+    _q_cpx_def = _om_d.offshore_capex_pct if is_offshore else _om_d.onshore_capex_pct
+
+    _q_c1, _q_c2, _q_c3 = 15.0, 22.0, 28.0
+    _q_cpx_val = _q_cpx_def
+    if _q_om_method_sel == "fixed_escalation":
+        with st.sidebar.expander("O&M Params (Fixed Escalation)", expanded=False):
+            _q_base_om_val = st.number_input("Base O&M (USD/kW/yr)", 5.0, 100.0, float(_q_base_om_def), step=1.0, key="q_fe_base")
+            _q_esc_val = st.number_input("Annual escalation (%)", 0.0, 10.0, float(_q_esc_def * 100), step=0.5, key="q_fe_esc") / 100.0
+    elif _q_om_method_sel == "capex_percentage":
+        with st.sidebar.expander("O&M Params (CAPEX %)", expanded=False):
+            _q_cpx_val = st.number_input("Annual O&M (% of CAPEX)", 0.5, 10.0, float(_q_cpx_def * 100), step=0.1, key="q_cp_pct") / 100.0
+            _q_base_om_val = _q_base_om_def
+            _q_esc_val = _q_esc_def
+    elif _q_om_method_sel == "contract":
+        with st.sidebar.expander("O&M Params (Contract)", expanded=False):
+            st.caption("Define cost by period (USD/kW/yr)")
+            _q_c1 = st.number_input("Yr 1-5", 5.0, 100.0, 15.0, key="q_ct1")
+            _q_c2 = st.number_input("Yr 6-10", 5.0, 100.0, 22.0, key="q_ct2")
+            _q_c3 = st.number_input("Yr 11+", 5.0, 100.0, 28.0, key="q_ct3")
+            _q_base_om_val = _q_base_om_def
+            _q_esc_val = _q_esc_def
+    else:
+        pass
+        _q_base_om_val = _q_base_om_def
+        _q_esc_val = _q_esc_def
+
     # 显示自动填充的默认值
     with st.sidebar.expander("Auto-filled defaults (view only)", expanded=False):
         st.markdown(f"""
@@ -774,12 +852,6 @@ def sidebar_inputs_quick() -> WindFarmFinancialInputs:
         working_capital_loan_rate=loan_rate,
         working_capital_equity_ratio=eq_ratio,
     )
-    _om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
-    _q_om_method = _om_d.recommended_method
-    _q_base_om = _om_d.offshore_base_om if is_offshore else _om_d.onshore_base_om
-    _q_esc = _om_d.escalation_rate
-    _q_capex_pct = _om_d.offshore_capex_pct if is_offshore else _om_d.onshore_capex_pct
-
     warranty = WarrantyPeriodCost(
         warranty_years=5, material_cost_per_kw=D("w_mat"),
         repair_cost_per_kw=0.0, other_cost_per_kw=D("w_other"),
@@ -789,14 +861,17 @@ def sidebar_inputs_quick() -> WindFarmFinancialInputs:
         material_cost_per_kw=D("pw_mat"), other_cost_per_kw=D("pw_other"),
         maintenance_rates=[(1,5,0.005),(6,10,0.01),(11,15,0.015),(16,20,0.02),(21,25,0.025)],
     )
+    _q_cpx_final = _q_cpx_val if _q_om_method_sel == "capex_percentage" else (_q_cpx_def)
+    _q_contract_periods = [(1,5,_q_c1),(6,10,_q_c2),(11,operation_years,_q_c3)] if _q_om_method_sel == "contract" else [(1,5,15.0),(6,10,20.0),(11,25,25.0)]
     operational = OperationalCost(
-        om_method=_q_om_method,
+        om_method=_q_om_method_sel,
         staff_count=D("staff"), salary_per_person=D("salary"), welfare_rate=0.40,
         insurance_rate=D("insurance"), depreciation_years=20, residual_rate=0.0,
         operation_years=operation_years, warranty=warranty,
         post_warranty=post_warranty,
-        base_om_per_kw=_q_base_om, om_escalation_rate=_q_esc,
-        capex_om_percentage=_q_capex_pct,
+        base_om_per_kw=_q_base_om_val, om_escalation_rate=_q_esc_val,
+        capex_om_percentage=_q_cpx_final,
+        contract_om_periods=_q_contract_periods,
         offshore_extra=offshore_extra,
     )
     tax_financial = TaxAndFinancial(
