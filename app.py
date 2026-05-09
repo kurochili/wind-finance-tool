@@ -23,6 +23,7 @@ import streamlit as st
 from wind_finance.calculator import CalculationResult, calculate
 from wind_finance.country_profiles import (
     CountryProfile,
+    CountryOMDefaults,
     MarketBenchmark,
     get_country_profile,
     list_countries,
@@ -53,6 +54,9 @@ from wind_finance.models import (
     TaxAndFinancial,
     WarrantyPeriodCost,
     WindFarmFinancialInputs,
+    OM_METHODS,
+    OM_METHOD_LABELS,
+    OM_METHOD_DESCRIPTIONS,
 )
 from wind_finance.reverse_solver import (
     solve_hours_for_target_irr,
@@ -583,10 +587,18 @@ def smart_upload_panel():
                 maintenance_rates=[(1,5,0.005),(6,10,0.01),(11,15,0.015),(16,20,0.02),(21,25,0.025)],
             )
             offshore_extra = OffshoreExtraCost(requires_sov=False, sea_area_usage_fee=43.0) if is_offshore else None
+            _su_om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
+            _su_om_method = _su_om_d.recommended_method
+            _su_base_om = _su_om_d.offshore_base_om if is_offshore else _su_om_d.onshore_base_om
+            _su_esc = _su_om_d.escalation_rate
+            _su_capex_pct = _su_om_d.offshore_capex_pct if is_offshore else _su_om_d.onshore_capex_pct
             operational = OperationalCost(
+                om_method=_su_om_method,
                 staff_count=35 if is_offshore else 15, salary_per_person=3.5 if is_offshore else 1.0,
                 welfare_rate=0.40, insurance_rate=0.0035, depreciation_years=20, residual_rate=0.0,
                 operation_years=oper_years, warranty=warranty, post_warranty=post_warranty,
+                base_om_per_kw=_su_base_om, om_escalation_rate=_su_esc,
+                capex_om_percentage=_su_capex_pct,
                 offshore_extra=offshore_extra,
             )
             tax_financial = TaxAndFinancial(
@@ -762,6 +774,12 @@ def sidebar_inputs_quick() -> WindFarmFinancialInputs:
         working_capital_loan_rate=loan_rate,
         working_capital_equity_ratio=eq_ratio,
     )
+    _om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
+    _q_om_method = _om_d.recommended_method
+    _q_base_om = _om_d.offshore_base_om if is_offshore else _om_d.onshore_base_om
+    _q_esc = _om_d.escalation_rate
+    _q_capex_pct = _om_d.offshore_capex_pct if is_offshore else _om_d.onshore_capex_pct
+
     warranty = WarrantyPeriodCost(
         warranty_years=5, material_cost_per_kw=D("w_mat"),
         repair_cost_per_kw=0.0, other_cost_per_kw=D("w_other"),
@@ -772,10 +790,14 @@ def sidebar_inputs_quick() -> WindFarmFinancialInputs:
         maintenance_rates=[(1,5,0.005),(6,10,0.01),(11,15,0.015),(16,20,0.02),(21,25,0.025)],
     )
     operational = OperationalCost(
+        om_method=_q_om_method,
         staff_count=D("staff"), salary_per_person=D("salary"), welfare_rate=0.40,
         insurance_rate=D("insurance"), depreciation_years=20, residual_rate=0.0,
         operation_years=operation_years, warranty=warranty,
-        post_warranty=post_warranty, offshore_extra=offshore_extra,
+        post_warranty=post_warranty,
+        base_om_per_kw=_q_base_om, om_escalation_rate=_q_esc,
+        capex_om_percentage=_q_capex_pct,
+        offshore_extra=offshore_extra,
     )
     tax_financial = TaxAndFinancial(
         tariff_with_tax=tariff, vat_rate=vat, vat_refund_rate=0.0,
@@ -813,6 +835,8 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     )
     is_offshore = "Offshore" in project_type
 
+    _sens_help = st.sidebar.checkbox("📊 显示参数说明与敏感性", value=False, key="show_sens_top")
+
     st.sidebar.markdown("---")
 
     # ═══════════════════ 1. 基本信息 ═══════════════════
@@ -822,8 +846,14 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     num_turbines = c1.number_input("机组台数", 1, 500, 28 if is_offshore else 16)
     turbine_mw = c2.number_input("单机容量(MW)", 1.0, 30.0, 18.0 if is_offshore else 6.25, step=0.5)
     full_load_hours = st.sidebar.slider("满负荷小时数 (h)", 1000, 5000, 3138 if is_offshore else 2523)
+    if _sens_help:
+        st.sidebar.caption("⚡⚡ **最高敏感** | ±100h ≈ IRR±0.3~0.8pp。是决定项目盈利的核心参数，建议用P50/P75/P90区分风险场景。")
     loss_rate = st.sidebar.slider("综合线损率 (%)", 0.0, 10.0, 3.0, step=0.5) / 100.0
+    if _sens_help:
+        st.sidebar.caption("🔵 **中敏感** | ±1% ≈ IRR±0.1~0.2pp。含厂用电+线路损耗，陆上2~4%，海上2~5%。")
     construction_months = st.sidebar.slider("建设期 (月)", 6, 36, 24 if is_offshore else 12)
+    if _sens_help:
+        st.sidebar.caption("🔵 **中敏感** | 建设期延长→建设期利息增加→IRR下降。每多6个月约IRR-0.1~0.3pp。")
 
     st.sidebar.markdown("---")
 
@@ -906,6 +936,8 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
             unit_investment = st.sidebar.number_input("手动输入 (USD/kW)", 200.0, 5000.0, 816.9, step=10.0, key="inv_manual_on")
 
     working_capital_per_kw = st.sidebar.number_input("流动资金 (USD/kW)", 0.0, 50.0, 4.2, step=0.5)
+    if _sens_help:
+        st.sidebar.caption("⚡⚡ **最高敏感** | 单位投资±100$/kW ≈ IRR±0.5~1.5pp。是仅次于电价和发电量的第三大敏感因子。")
 
     st.sidebar.markdown("---")
 
@@ -916,12 +948,20 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     default_term = profile.typical_loan_term if profile else 15
 
     equity_ratio = st.sidebar.slider("资本金比例 (%)", 10.0, 50.0, default_eq, step=1.0) / 100.0
+    if _sens_help:
+        st.sidebar.caption("⚡ **高敏感** | 资本金↑10% ≈ 资本金IRR↓2~4pp（杠杆效应减弱），但全投资IRR不变。影响资本金IRR和融资结构。")
     loan_rate = st.sidebar.slider("贷款年利率 (%)", 0.5, 15.0, default_rate, step=0.25) / 100.0
+    if _sens_help:
+        st.sidebar.caption(f"⚡ **高敏感** | 利率±1% ≈ IRR±0.3~0.7pp。{selected_display}当前: {default_rate:.2f}%")
     loan_term = st.sidebar.slider("贷款年限", 5, 25, default_term)
+    if _sens_help:
+        st.sidebar.caption("🔵 **中敏感** | 延长贷款=前期还款压力小=资本金IRR提升，但总利息增加。")
 
     with st.sidebar.expander("🔄 流动资金贷款", expanded=False):
         wc_loan_rate = st.number_input("流动资金贷款利率 (%)", 0.0, 15.0, 3.25, step=0.25, key="wclr") / 100.0
         wc_equity_ratio = st.number_input("流动资金自有资金比例 (%)", 0.0, 100.0, 30.0, step=5.0, key="wcer") / 100.0
+        if _sens_help:
+            st.caption("⚪ **低敏感** | 流动资金占总投资<1%，对IRR影响极小（<0.05pp）。")
 
     st.sidebar.markdown("---")
 
@@ -929,13 +969,23 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     st.sidebar.markdown("### 📊 税费与电价")
     default_vat = profile.vat_rate * 100 if profile else 13.0
     default_cit = profile.corporate_income_tax_rate * 100 if profile else 25.0
-    default_tariff = 0.0638 if is_offshore else 0.0434
+    _tariff_range = profile.offshore_tariff_range if is_offshore else profile.onshore_tariff_range
+    if _tariff_range and _tariff_range[0] > 0:
+        default_tariff = round((_tariff_range[0] + _tariff_range[1]) / 2, 4)
+    else:
+        default_tariff = 0.0638 if is_offshore else 0.0434
 
     tariff = st.sidebar.number_input("含税电价 (USD/kWh)", 0.001, 0.500, default_tariff, step=0.001, format="%.4f")
+    if _sens_help:
+        st.sidebar.caption(f"⚡⚡ **最高敏感** | 电价±0.01$/kWh ≈ IRR±1~2pp。{selected_display}参考: {'海上' if is_offshore else '陆上'} {_tariff_range[0]:.4f}~{_tariff_range[1]:.4f} USD/kWh")
     vat_rate = st.sidebar.slider("增值税率 (%)", 0.0, 20.0, default_vat, step=1.0) / 100.0
-    vat_refund = st.sidebar.slider("即征即退比例 (%)", 0.0, 100.0, 50.0, step=5.0) / 100.0
+    vat_refund = st.sidebar.slider("即征即退比例 (%)", 0.0, 100.0, 50.0 if country_name == "China" else 0.0, step=5.0) / 100.0
     income_tax_rate = st.sidebar.slider("所得税率 (%)", 0.0, 35.0, default_cit, step=1.0) / 100.0
+    if _sens_help:
+        st.sidebar.caption(f"🔵 **中敏感** | 所得税±5% ≈ IRR税后±0.2~0.4pp。{selected_display}: {default_cit:.0f}%{'，有风电优惠' if profile and profile.has_wind_tax_incentive else ''}")
     discount_rate = st.sidebar.slider("基准折现率 (%)", 3.0, 15.0, 8.0, step=0.5) / 100.0
+    if _sens_help:
+        st.sidebar.caption("🔵 **中敏感** | 折现率不影响IRR，只影响NPV。折现率↑=NPV↓。8%为中国标准，海外项目常用WACC(6~10%)。")
 
     with st.sidebar.expander("📑 税费附加 & 所得税优惠", expanded=False):
         urban_tax = st.number_input("城市维护建设税率 (%)", 0.0, 10.0,
@@ -962,39 +1012,153 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
 
     # ═══════════════════ 5. 运营成本分项 ═══════════════════
     st.sidebar.markdown("### 🔧 运营成本")
-    operation_years = st.sidebar.slider("运营期 (年)", 15, 30, 25 if is_offshore else 20)
+
+    operation_years = st.sidebar.slider("运营期 (年)", 15, 35, 25 if is_offshore else 20)
+    if _sens_help:
+        st.sidebar.caption("⚡ **高敏感** | 延长运营期可提升IRR 0.3~1.0pp，但后期运维成本递增会削弱效果。海上25年、陆上20年为行业惯例。")
+
     depreciation_years = st.sidebar.slider("折旧年限 (年)", 10, 25, 20)
+    if _sens_help:
+        st.sidebar.caption("🔵 **中敏感** | 影响年折旧额→利润→所得税。缩短折旧年限=前期少交税=IRR微升，但对银行还款计划无影响。")
+
     residual_rate = st.sidebar.slider("残值率 (%)", 0.0, 10.0, 0.0 if is_offshore else 5.0, step=0.5) / 100.0
+    if _sens_help:
+        st.sidebar.caption("⚪ **低敏感** | 仅影响折旧基数和末年回收。海上通常0%（拆除成本抵消），陆上5%。")
 
     with st.sidebar.expander("👷 人员与保险", expanded=False):
         staff_count = st.number_input("定员人数", 1, 200, 35 if is_offshore else 18, key="staff")
         salary_per_person = st.number_input("人均年薪 (万USD)", 0.5, 20.0, 3.52 if is_offshore else 1.11, step=0.1, key="sal")
         welfare_rate = st.number_input("福利系数", 0.0, 2.0, 0.60, step=0.05, key="welf")
         insurance_rate = st.number_input("保险费率 (%)", 0.0, 1.0, 0.35 if is_offshore else 0.25, step=0.05, key="ins") / 100.0
+        if _sens_help:
+            st.caption("⚪ 人员和保险为固定成本，占运维总额10~25%。对IRR影响有限（<0.1pp），但影响LCOE约1~3厘/kWh。")
 
-    with st.sidebar.expander("🛡️ 质保期内运维 (USD/kW·年)", expanded=False):
-        warranty_years = st.number_input("质保期 (年)", 0, 10, 5, key="wy")
-        w_material = st.number_input("材料费", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="wm")
-        w_repair = st.number_input("维修费", 0.0, 20.0, 0.0, step=0.1, key="wr")
-        w_other = st.number_input("其他费用", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="wo")
+    # ── 运维算法选择 ──
+    st.sidebar.markdown("---")
+    om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
+    _rec_method = om_d.recommended_method
 
-    with st.sidebar.expander("🔧 质保期外运维", expanded=False):
-        pw_major = st.checkbox("含大部件更换", value=True, key="pw_major")
-        pw_material = st.number_input("材料费 (USD/kW·年)", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="pwm")
-        pw_other = st.number_input("其他费用 (USD/kW·年)", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="pwo")
-        st.markdown("**维修费率 (基于静态投资)**")
-        st.caption("格式: 起始年-结束年: 费率%")
-        rate_6_10 = st.number_input("6-10年 (%)", 0.0, 5.0, 1.0, step=0.1, key="mr1") / 100.0
-        rate_11_15 = st.number_input("11-15年 (%)", 0.0, 5.0, 1.5, step=0.1, key="mr2") / 100.0
-        rate_16_20 = st.number_input("16-20年 (%)", 0.0, 5.0, 2.0, step=0.1, key="mr3") / 100.0
-        rate_21_25 = st.number_input("21-25年 (%)", 0.0, 5.0, 2.5, step=0.1, key="mr4") / 100.0
-        maint_rates = [
-            (1, 5, 0.005),
-            (6, 10, rate_6_10),
-            (11, 15, rate_11_15),
-            (16, 20, rate_16_20),
-            (21, 25, rate_21_25),
-        ]
+    om_method_options = {v: k for k, v in OM_METHOD_LABELS.items()}
+    _rec_label = OM_METHOD_LABELS.get(_rec_method, "固定单价法 ($/kW + 年增长率)")
+    om_method_display = st.sidebar.selectbox(
+        "🔄 运维计算方法",
+        list(OM_METHOD_LABELS.values()),
+        index=list(OM_METHOD_LABELS.keys()).index(_rec_method) if _rec_method in OM_METHOD_LABELS else 1,
+        key="om_method_sel",
+    )
+    om_method = om_method_options[om_method_display]
+    st.sidebar.caption(f"🌏 {selected_display} 推荐: **{_rec_label}**")
+    if _sens_help:
+        st.sidebar.info(OM_METHOD_DESCRIPTIONS.get(om_method, ""))
+        if om_d.rationale:
+            st.sidebar.caption(f"📖 推荐理由: {om_d.rationale}")
+        if om_d.sources:
+            st.sidebar.caption(f"📚 数据来源: {om_d.sources}")
+
+    # ── 根据算法显示不同输入 ──
+    warranty_cost = WarrantyPeriodCost()
+    post_warranty_cost = PostWarrantyPeriodCost()
+    base_om_per_kw = 25.0
+    om_escalation_rate = 0.02
+    capex_om_percentage = 0.02
+    capex_om_escalation = 0.0
+    contract_om_periods = [(1, 5, 15.0), (6, 10, 20.0), (11, 25, 25.0)]
+
+    if om_method == "chinese_feasibility":
+        with st.sidebar.expander("🛡️ 质保期内运维 (USD/kW·年)", expanded=False):
+            warranty_years = st.number_input("质保期 (年)", 0, 10, 5, key="wy")
+            w_material = st.number_input("材料费", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="wm")
+            w_repair = st.number_input("维修费", 0.0, 20.0, 0.0, step=0.1, key="wr")
+            w_other = st.number_input("其他费用", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="wo")
+            if _sens_help:
+                st.caption("⚪ 质保期成本由厂商承担大部分，对IRR影响较小。典型海上4~8$/kW，陆上3~6$/kW。")
+        warranty_cost = WarrantyPeriodCost(
+            warranty_years=warranty_years,
+            material_cost_per_kw=w_material,
+            repair_cost_per_kw=w_repair,
+            other_cost_per_kw=w_other,
+        )
+
+        with st.sidebar.expander("🔧 质保期外运维 (投资%递增)", expanded=False):
+            pw_major = st.checkbox("含大部件更换", value=True, key="pw_major")
+            pw_material = st.number_input("材料费 (USD/kW·年)", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="pwm")
+            pw_other = st.number_input("其他费用 (USD/kW·年)", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="pwo")
+            st.markdown("**维修费率 (基于静态投资)**")
+            rate_6_10 = st.number_input("6-10年 (%)", 0.0, 5.0, 1.0, step=0.1, key="mr1") / 100.0
+            rate_11_15 = st.number_input("11-15年 (%)", 0.0, 5.0, 1.5, step=0.1, key="mr2") / 100.0
+            rate_16_20 = st.number_input("16-20年 (%)", 0.0, 5.0, 2.0, step=0.1, key="mr3") / 100.0
+            rate_21_25 = st.number_input("21-25年 (%)", 0.0, 5.0, 2.5, step=0.1, key="mr4") / 100.0
+            maint_rates = [
+                (1, 5, 0.005),
+                (6, 10, rate_6_10),
+                (11, 15, rate_11_15),
+                (16, 20, rate_16_20),
+                (21, 25, rate_21_25),
+            ]
+            if _sens_help:
+                st.caption("⚡ **高敏感** | 维修费率是运维成本最大变量。1%→2%费率变化可导致IRR波动0.3~0.8pp。注意：基数是全部静态投资，海上项目含海缆/升压站等非机电设备，可能偏高。")
+                st.warning("⚠️ 此方法适用于中国国内项目。海外项目建议切换为'固定单价法'或'合同报价法'。")
+        post_warranty_cost = PostWarrantyPeriodCost(
+            includes_major_components=pw_major,
+            material_cost_per_kw=pw_material,
+            other_cost_per_kw=pw_other,
+            maintenance_rates=maint_rates,
+        )
+
+    elif om_method == "fixed_escalation":
+        with st.sidebar.expander("📊 固定单价法参数", expanded=True):
+            _def_base = om_d.offshore_base_om if is_offshore else om_d.onshore_base_om
+            _def_esc = om_d.escalation_rate
+            base_om_per_kw = st.number_input(
+                "基准O&M (USD/kW/年)", 5.0, 100.0, float(_def_base), step=1.0, key="fe_base",
+                help="不含人员/保险/SOV/海域金，仅维修+材料+其他"
+            )
+            om_escalation_rate = st.number_input(
+                "年增长率 (%)", 0.0, 10.0, float(_def_esc * 100), step=0.5, key="fe_esc"
+            ) / 100.0
+            if _sens_help:
+                yr10_om = base_om_per_kw * (1 + om_escalation_rate) ** 9
+                yr20_om = base_om_per_kw * (1 + om_escalation_rate) ** 19
+                st.caption(f"⚡ **高敏感** | 基准单价±5$/kW ≈ IRR±0.2~0.5pp。第10年: {yr10_om:.1f} $/kW, 第20年: {yr20_om:.1f} $/kW")
+                st.caption(f"📖 {selected_display}参考: 陆上 {om_d.onshore_base_om:.0f} $/kW, 海上 {om_d.offshore_base_om:.0f} $/kW (BNEF)")
+
+    elif om_method == "capex_percentage":
+        with st.sidebar.expander("📊 投资百分比法参数", expanded=True):
+            _def_pct = om_d.offshore_capex_pct if is_offshore else om_d.onshore_capex_pct
+            capex_om_percentage = st.number_input(
+                "年运维费 (占CAPEX %)", 0.5, 10.0, float(_def_pct * 100), step=0.1, key="cp_pct"
+            ) / 100.0
+            capex_om_escalation = st.number_input(
+                "年增长率 (%)", 0.0, 10.0, 0.0, step=0.5, key="cp_esc"
+            ) / 100.0
+            if _sens_help:
+                st.caption(f"⚡ **高敏感** | ±0.5%CAPEX ≈ IRR±0.3~0.6pp。行业参考: 陆上1.2~2.0%, 海上2.0~3.5% (IRENA 2023)")
+                st.caption(f"📖 {selected_display}参考: 陆上 {om_d.onshore_capex_pct*100:.1f}%, 海上 {om_d.offshore_capex_pct*100:.1f}%")
+
+    elif om_method == "contract":
+        with st.sidebar.expander("📋 合同报价法 (分阶段$/kW)", expanded=True):
+            st.markdown("自定义各阶段运维单价 (不含人员/保险/海上专项)")
+            c1, c2, c3 = st.columns(3)
+            ct_s1 = c1.number_input("阶段1起(年)", 1, 35, 1, key="ct_s1")
+            ct_e1 = c2.number_input("阶段1止(年)", 1, 35, 5, key="ct_e1")
+            ct_v1 = c3.number_input("$/kW/年", 0.0, 200.0, 15.0, step=1.0, key="ct_v1")
+            c1, c2, c3 = st.columns(3)
+            ct_s2 = c1.number_input("阶段2起(年)", 1, 35, 6, key="ct_s2")
+            ct_e2 = c2.number_input("阶段2止(年)", 1, 35, 10, key="ct_e2")
+            ct_v2 = c3.number_input("$/kW/年", 0.0, 200.0, 20.0, step=1.0, key="ct_v2")
+            c1, c2, c3 = st.columns(3)
+            ct_s3 = c1.number_input("阶段3起(年)", 1, 35, 11, key="ct_s3")
+            ct_e3 = c2.number_input("阶段3止(年)", 1, 35, 25, key="ct_e3")
+            ct_v3 = c3.number_input("$/kW/年", 0.0, 200.0, 25.0, step=1.0, key="ct_v3")
+            contract_om_periods = [
+                (ct_s1, ct_e1, ct_v1),
+                (ct_s2, ct_e2, ct_v2),
+                (ct_s3, ct_e3, ct_v3),
+            ]
+            if _sens_help:
+                avg_om = sum(v * (e - s + 1) for s, e, v in contract_om_periods) / max(1, sum(e - s + 1 for s, e, _ in contract_om_periods))
+                st.caption(f"⚡ **高敏感** | 加权平均 {avg_om:.1f} $/kW/年。±5$/kW ≈ IRR±0.2~0.5pp")
+                st.caption("📖 最精确的方法。如有厂商或第三方O&M合同报价，直接输入即可。")
 
     # ──── 海上专项 ────
     offshore_extra = None
@@ -1012,6 +1176,8 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
                 storage_rental=storage_rental,
                 decommissioning_rate=decomm_rate,
             )
+            if _sens_help:
+                st.caption("🔵 **中敏感** | SOV 150万$/年 ≈ IRR-0.3pp。海域金对IRR影响约0.05~0.15pp。是否需要SOV取决于离岸距离和水深。")
 
     # ═══════════════════ 组装 ═══════════════════
     basic = BasicInfo(
@@ -1040,20 +1206,8 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
         working_capital_equity_ratio=wc_equity_ratio,
     )
 
-    warranty_cost = WarrantyPeriodCost(
-        warranty_years=warranty_years,
-        material_cost_per_kw=w_material,
-        repair_cost_per_kw=w_repair,
-        other_cost_per_kw=w_other,
-    )
-    post_warranty_cost = PostWarrantyPeriodCost(
-        includes_major_components=pw_major,
-        material_cost_per_kw=pw_material,
-        other_cost_per_kw=pw_other,
-        maintenance_rates=maint_rates,
-    )
-
     operational = OperationalCost(
+        om_method=om_method,
         staff_count=staff_count,
         salary_per_person=salary_per_person,
         welfare_rate=welfare_rate,
@@ -1063,6 +1217,11 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
         operation_years=operation_years,
         warranty=warranty_cost,
         post_warranty=post_warranty_cost,
+        base_om_per_kw=base_om_per_kw,
+        om_escalation_rate=om_escalation_rate,
+        capex_om_percentage=capex_om_percentage,
+        capex_om_escalation=capex_om_escalation,
+        contract_om_periods=contract_om_periods,
         offshore_extra=offshore_extra,
     )
 
