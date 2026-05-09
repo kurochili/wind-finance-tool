@@ -412,33 +412,73 @@ class OffshoreExtraCost:
     decommissioning_rate: float = 0.0       # 经营期末拆除费率（小数，如 0.02 基于静态投资）
 
 
+OM_METHODS = ("chinese_feasibility", "fixed_escalation", "capex_percentage", "contract")
+OM_METHOD_LABELS = {
+    "chinese_feasibility": "中国可研法 (质保+投资百分比递增)",
+    "fixed_escalation": "固定单价法 ($/kW + 年增长率)",
+    "capex_percentage": "投资百分比法 (CAPEX × 固定比例)",
+    "contract": "合同报价法 (分阶段自定义$/kW)",
+}
+OM_METHOD_DESCRIPTIONS = {
+    "chinese_feasibility": "中国可研报告标准算法。质保期内按固定$/kW，质保期外维修费按静态总投资的百分比分阶段递增(1%→2.5%)。适用于中国国内项目。",
+    "fixed_escalation": "国际通用算法(BNEF/IRENA)。设定基准O&M单价($/kW/年)，每年按通胀率递增。计算简单透明，适用于海外项目初步评估。",
+    "capex_percentage": "简化全口径算法。运维费 = CAPEX × 固定百分比(通常1.5~3%)。适合前期粗算或对标国际报告。",
+    "contract": "基于实际运维合同报价。工程师自定义各阶段的运维单价($/kW/年)，最灵活、最精确。适用于有合同报价的成熟项目。",
+}
+
+
 @dataclass
 class OperationalCost:
     """
     运营成本汇总模块
 
     合并质保期内/外成本、人员成本、保险、折旧等。
+    支持 4 种运维计算方法：
+      - chinese_feasibility: 中国可研法（质保期 + 投资百分比递增）
+      - fixed_escalation: 固定单价法（基准 $/kW + 年增长率）
+      - capex_percentage: 投资百分比法（CAPEX × 固定比例）
+      - contract: 合同报价法（分阶段自定义 $/kW）
     """
 
+    # ---- 运维算法 ----
+    om_method: str = "chinese_feasibility"
+
     # ---- 人员 ----
-    staff_count: int = 10                   # 定员人数（陆上 8-10，海上 35）
-    salary_per_person: float = 2.54         # 人均年薪（万 USD），中国陆上约 18 万元 ≈ 2.54 万 USD
-    welfare_rate: float = 0.60              # 福利系数（小数，含社保公积金等附加工资）
+    staff_count: int = 10
+    salary_per_person: float = 2.54
+    welfare_rate: float = 0.60
 
     # ---- 保险 ----
-    insurance_rate: float = 0.0025          # 保险费率（小数，基于静态投资。陆上 0.25%，海上 0.35%）
+    insurance_rate: float = 0.0025
 
     # ---- 折旧 ----
-    depreciation_years: int = 20            # 折旧年限（年）
-    residual_rate: float = 0.0              # 残值率（小数，0~0.05）
+    depreciation_years: int = 20
+    residual_rate: float = 0.0
 
     # ---- 运营期 ----
-    operation_years: int = 20               # 运营期（年，陆上 20，海上 25）
-    reserve_fund_rate: float = 0.10         # 法定盈余公积金提取率（小数）
+    operation_years: int = 20
+    reserve_fund_rate: float = 0.10
 
-    # ---- 分阶段成本 ----
+    # ---- 方法A: 中国可研法 (chinese_feasibility) ----
     warranty: WarrantyPeriodCost = field(default_factory=WarrantyPeriodCost)
     post_warranty: PostWarrantyPeriodCost = field(default_factory=PostWarrantyPeriodCost)
+
+    # ---- 方法B: 固定单价法 (fixed_escalation) ----
+    base_om_per_kw: float = 25.0       # 基准 O&M (USD/kW/年)，不含人员/保险/海上
+    om_escalation_rate: float = 0.02   # 年增长率 (2%)
+
+    # ---- 方法C: 投资百分比法 (capex_percentage) ----
+    capex_om_percentage: float = 0.02  # O&M = CAPEX × 此比例，不含人员/保险/海上
+    capex_om_escalation: float = 0.0   # 可选年增长率
+
+    # ---- 方法D: 合同报价法 (contract) ----
+    contract_om_periods: List[Tuple[int, int, float]] = field(default_factory=lambda: [
+        (1, 5, 15.0),    # Year 1-5:  15.0 $/kW/年
+        (6, 10, 20.0),   # Year 6-10: 20.0 $/kW/年
+        (11, 25, 25.0),  # Year 11+:  25.0 $/kW/年
+    ])
+
+    # ---- 海上专项 ----
     offshore_extra: Optional[OffshoreExtraCost] = None
 
     @property
@@ -451,11 +491,16 @@ class OperationalCost:
         return total_static_investment * self.insurance_rate
 
     def annual_depreciation(self, depreciable_base: float) -> float:
-        """
-        年折旧费（USD）= 可折旧基数 × (1 - 残值率) / 折旧年限
-        可折旧基数 = 固定资产原值（通常 = 静态投资 + 建设期利息 - 可抵扣进项税）
-        """
         return depreciable_base * (1.0 - self.residual_rate) / self.depreciation_years
+
+    def _get_contract_rate(self, operation_year: int) -> float:
+        """合同报价法: 查找指定年份的 $/kW"""
+        for start, end, rate in self.contract_om_periods:
+            if start <= operation_year <= end:
+                return rate
+        if self.contract_om_periods:
+            return self.contract_om_periods[-1][2]
+        return 0.0
 
     def get_year_opex(
         self,
@@ -466,22 +511,54 @@ class OperationalCost:
         """
         获取指定运营年份的各项运维成本明细（USD）
 
+        根据 om_method 选择不同的计算逻辑：
+        - chinese_feasibility: 质保期内固定$/kW，质保外按投资%递增
+        - fixed_escalation: base_om × (1+escalation)^(year-1) × capacity_kw
+        - capex_percentage: total_static × capex_om_pct × (1+esc)^(year-1)
+        - contract: 查表 $/kW × capacity_kw
+
         Returns:
             dict 包含: material, repair, other, staff, insurance, offshore_extra
         """
-        in_warranty = operation_year <= self.warranty.warranty_years
+        method = self.om_method
 
-        if in_warranty:
-            material = self.warranty.material_cost_per_kw * capacity_kw
-            repair = self.warranty.repair_cost_per_kw * capacity_kw
-            other = self.warranty.other_cost_per_kw * capacity_kw
+        if method == "chinese_feasibility":
+            in_warranty = operation_year <= self.warranty.warranty_years
+            if in_warranty:
+                material = self.warranty.material_cost_per_kw * capacity_kw
+                repair = self.warranty.repair_cost_per_kw * capacity_kw
+                other = self.warranty.other_cost_per_kw * capacity_kw
+            else:
+                material = self.post_warranty.material_cost_per_kw * capacity_kw
+                rate = self.post_warranty.get_maintenance_rate(operation_year)
+                repair = total_static_investment * rate
+                other = self.post_warranty.other_cost_per_kw * capacity_kw
+
+        elif method == "fixed_escalation":
+            yearly_om = self.base_om_per_kw * (1.0 + self.om_escalation_rate) ** (operation_year - 1)
+            total_om = yearly_om * capacity_kw
+            material = total_om * 0.15
+            repair = total_om * 0.60
+            other = total_om * 0.25
+
+        elif method == "capex_percentage":
+            esc = (1.0 + self.capex_om_escalation) ** (operation_year - 1) if self.capex_om_escalation else 1.0
+            total_om = total_static_investment * self.capex_om_percentage * esc
+            material = total_om * 0.15
+            repair = total_om * 0.60
+            other = total_om * 0.25
+
+        elif method == "contract":
+            yearly_rate = self._get_contract_rate(operation_year)
+            total_om = yearly_rate * capacity_kw
+            material = total_om * 0.15
+            repair = total_om * 0.60
+            other = total_om * 0.25
+
         else:
-            material = self.post_warranty.material_cost_per_kw * capacity_kw
-            rate = self.post_warranty.get_maintenance_rate(operation_year)
-            repair = total_static_investment * rate
-            other = self.post_warranty.other_cost_per_kw * capacity_kw
+            material = repair = other = 0.0
 
-        staff = self.annual_staff_cost * 10_000  # 万USD -> USD
+        staff = self.annual_staff_cost * 10_000
         insurance = self.annual_insurance(total_static_investment)
 
         offshore = 0.0
