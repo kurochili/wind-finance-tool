@@ -98,26 +98,51 @@ class CountryMarketReport:
 
 
 @dataclass
+class CountryOMDefaults:
+    """国家推荐的运维计算默认值"""
+
+    recommended_method: str = "fixed_escalation"
+
+    # 固定单价法默认值
+    onshore_base_om: float = 15.0      # $/kW/年
+    offshore_base_om: float = 30.0     # $/kW/年
+    escalation_rate: float = 0.02      # 2%
+
+    # 投资百分比法默认值
+    onshore_capex_pct: float = 0.015   # 1.5%
+    offshore_capex_pct: float = 0.025  # 2.5%
+
+    # 合同报价法默认值
+    onshore_contract: str = ""         # 描述性文字
+    offshore_contract: str = ""
+
+    # 推荐理由
+    rationale: str = ""
+
+    # 行业数据来源
+    sources: str = ""
+
+
+@dataclass
 class CountryProfile:
     """国家/地区默认财务参数"""
 
-    country_name: str                       # 国家名称 (英文)
-    country_name_cn: str                    # 国家名称 (中文)
-    currency: str                           # 当地货币代码
-    exchange_rate_to_usd: float             # 当地货币兑 USD 汇率（1 USD = ? 当地货币）
+    country_name: str
+    country_name_cn: str
+    currency: str
+    exchange_rate_to_usd: float
 
     # ---- 融资 ----
-    typical_equity_ratio: float             # 典型资本金比例（小数）
-    typical_loan_rate: float                # 典型长期贷款利率（小数）
-    typical_loan_term: int                  # 典型贷款期限（年）
+    typical_equity_ratio: float
+    typical_loan_rate: float
+    typical_loan_term: int
 
     # ---- 税费 ----
-    corporate_income_tax_rate: float        # 企业所得税标准税率（小数）
-    vat_rate: float                         # 增值税 / 销售税率（小数）
-    has_wind_tax_incentive: bool            # 是否有风电税收优惠
-    tax_incentive_description: str          # 税收优惠简述
+    corporate_income_tax_rate: float
+    vat_rate: float
+    has_wind_tax_incentive: bool
+    tax_incentive_description: str
 
-    # 所得税优惠：(免征起始年, 免征结束年, 免征期税率, 减半起始年, 减半结束年, 减半期税率)
     income_tax_holiday: Tuple[int, int, float, int, int, float] = (1, 1, 0.0, 1, 1, 0.0)
 
     urban_maintenance_tax_rate: float = 0.0
@@ -126,6 +151,9 @@ class CountryProfile:
     # ---- 电价参考 ----
     onshore_tariff_range: Tuple[float, float] = (0.0, 0.0)
     offshore_tariff_range: Tuple[float, float] = (0.0, 0.0)
+
+    # ---- 运维推荐 ----
+    om_defaults: CountryOMDefaults = field(default_factory=CountryOMDefaults)
 
     # ---- 市场基准 ----
     benchmarks: List[MarketBenchmark] = field(default_factory=list)
@@ -165,6 +193,13 @@ _register(CountryProfile(
     education_surcharge_rate=0.05,
     onshore_tariff_range=(0.027, 0.058),
     offshore_tariff_range=(0.056, 0.078),
+    om_defaults=CountryOMDefaults(
+        recommended_method="chinese_feasibility",
+        onshore_base_om=12.0, offshore_base_om=25.0, escalation_rate=0.02,
+        onshore_capex_pct=0.012, offshore_capex_pct=0.020,
+        rationale="中国项目通常采用可研标准算法，设计院和银行普遍认可。维修费按静态投资百分比递增是行业惯例。",
+        sources="NDRC可研编制办法; CWEA行业统计; 各省设计院模板",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 8.0, 10.0, "NDRC 发改委基准收益率", "", 2024, "国内通用基准"),
         MarketBenchmark("Equity IRR", "offshore", 8.0, 10.0, "NDRC 发改委基准收益率", "", 2024, "海上风电同样适用"),
@@ -280,6 +315,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 4, 0.0, 5, 13, 0.10),
     onshore_tariff_range=(0.070, 0.076),
     offshore_tariff_range=(0.077, 0.085),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=15.0, offshore_base_om=28.0, escalation_rate=0.02,
+        onshore_capex_pct=0.015, offshore_capex_pct=0.025,
+        rationale="越南海外项目建议采用固定单价法，与国际投资者和银行沟通更顺畅。近海项目O&M 25-35 $/kW/年(BNEF)。",
+        sources="BNEF Vietnam RE Country Profile 2024; EVN tariff Decision 1508",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "all", 12.0, 12.0, "MOIT Decision 1824 (官方定价基准)", "", 2020, "越南工贸部 FIT 定价所用基准 Equity IRR"),
         MarketBenchmark("Equity IRR", "onshore", 10.5, 13.5, "BNEF Vietnam Wind Market Outlook 2024", "", 2024, "国际开发商要求的 hurdle rate"),
@@ -427,6 +469,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 7, 0.0, 8, 14, 0.10),
     onshore_tariff_range=(0.070, 0.100),
     offshore_tariff_range=(0.090, 0.120),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=18.0, offshore_base_om=35.0, escalation_rate=0.025,
+        onshore_capex_pct=0.018, offshore_capex_pct=0.028,
+        rationale="菲律宾项目建议固定单价法。台风多发区域运维成本偏高，建议预留备件储备金。",
+        sources="BNEF SEA RE Investment 2024; DOE Philippines RE Roadmap",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 12.0, 15.0, "DOE RE Policy Framework", "", 2023, "菲律宾能源部 RE 法案项目预期"),
         MarketBenchmark("Equity IRR", "offshore", 12.0, 16.0, "BNEF SE Asia RE Outlook 2024", "", 2024, "海上风电开发商要求"),
@@ -510,6 +559,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 8, 0.0, 9, 13, 0.10),
     onshore_tariff_range=(0.075, 0.089),
     offshore_tariff_range=(0.0, 0.0),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=14.0, offshore_base_om=30.0, escalation_rate=0.02,
+        onshore_capex_pct=0.015, offshore_capex_pct=0.025,
+        rationale="泰国项目建议固定单价法。BOI优惠下运维成本结构与国际接轨。",
+        sources="BNEF Thailand Country Profile 2024; BOI Investment Guide",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 10.0, 13.0, "EPPO Thailand PDP 2024", "", 2024, "泰国电力发展规划预期回报"),
         MarketBenchmark("WACC", "all", 6.0, 8.0, "IRENA Cost of Financing RE 2023", "https://www.irena.org", 2023, "东南亚中等水平"),
@@ -592,6 +648,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 5, 0.0, 6, 10, 0.11),
     onshore_tariff_range=(0.065, 0.095),
     offshore_tariff_range=(0.0, 0.0),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=16.0, offshore_base_om=32.0, escalation_rate=0.03,
+        onshore_capex_pct=0.016, offshore_capex_pct=0.026,
+        rationale="印尼项目建议固定单价法。群岛地形导致运维物流成本高，通胀率偏高(3%)。",
+        sources="BNEF Indonesia Country Profile 2024; PLN RUPTL 2025",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 13.0, 16.0, "MEMR RUPTL 2021-2030", "", 2023, "PLN 购电协议下的开发商预期"),
         MarketBenchmark("WACC", "all", 9.0, 12.0, "World Bank Indonesia Energy Transition 2023", "https://www.worldbank.org", 2023, "印尼 RE 项目较高融资成本"),
@@ -674,6 +737,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 5, 0.0, 6, 10, 0.12),
     onshore_tariff_range=(0.060, 0.085),
     offshore_tariff_range=(0.0, 0.0),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=14.0, offshore_base_om=28.0, escalation_rate=0.02,
+        onshore_capex_pct=0.014, offshore_capex_pct=0.024,
+        rationale="马来西亚项目建议固定单价法。运维市场较成熟，可参考半岛电力公司合同报价。",
+        sources="BNEF Malaysia RE 2024; SEDA Malaysia Feed-in Tariff",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 10.0, 13.0, "SEDA Malaysia RE Roadmap", "", 2024, "马来西亚可持续能源发展局"),
         MarketBenchmark("WACC", "all", 6.5, 8.5, "IRENA Cost of Financing RE 2023", "https://www.irena.org", 2023, "东南亚中低水平"),
@@ -756,6 +826,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 9, 0.0, 10, 12, 0.10),
     onshore_tariff_range=(0.070, 0.100),
     offshore_tariff_range=(0.0, 0.0),
+    om_defaults=CountryOMDefaults(
+        recommended_method="capex_percentage",
+        onshore_base_om=16.0, offshore_base_om=30.0, escalation_rate=0.025,
+        onshore_capex_pct=0.018, offshore_capex_pct=0.028,
+        rationale="柬埔寨市场早期，缺乏本地运维供应链，建议用投资百分比法粗算后按合同报价法精算。",
+        sources="BNEF Cambodia Country Profile 2024; EAC Cambodia",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 14.0, 18.0, "ADB Cambodia Energy Sector Assessment 2023", "https://www.adb.org", 2023, "高风险市场溢价"),
         MarketBenchmark("WACC", "all", 10.0, 13.0, "World Bank Cambodia RE Assessment 2023", "https://www.worldbank.org", 2023, "前沿市场高融资成本"),
@@ -838,6 +915,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 1, 0.2337, 1, 1, 0.2337),
     onshore_tariff_range=(0.100, 0.160),
     offshore_tariff_range=(0.190, 0.260),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=20.0, offshore_base_om=45.0, escalation_rate=0.015,
+        onshore_capex_pct=0.015, offshore_capex_pct=0.030,
+        rationale="日本运维成本全球最高之一。海上O&M 40-55 $/kW(BNEF)，受限于港口和船舶资源。通胀低(1.5%)。",
+        sources="BNEF Japan Offshore Wind Market Outlook 2025; METI/JWPA",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 6.0, 9.0, "METI FIT/FIP 制度设计基础", "", 2024, "日本经产省 FIT 定价隐含收益率"),
         MarketBenchmark("Equity IRR", "offshore", 8.0, 12.0, "JWPA 日本风力发电协会", "", 2024, "海上风电投资预期"),
@@ -932,6 +1016,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 1, 0.242, 1, 1, 0.242),
     onshore_tariff_range=(0.080, 0.120),
     offshore_tariff_range=(0.127, 0.175),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=18.0, offshore_base_om=40.0, escalation_rate=0.02,
+        onshore_capex_pct=0.015, offshore_capex_pct=0.028,
+        rationale="韩国海上风电市场快速发展，运维成本高于东南亚。建议固定单价法，参考MOTIE拍卖标准。",
+        sources="BNEF South Korea Offshore Wind Outlook 2024; MOTIE/KEPCO",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 7.0, 10.0, "MOTIE 韩国产业通商资源部", "", 2024, "RPS/REC 体系下"),
         MarketBenchmark("Equity IRR", "offshore", 8.0, 12.0, "KWEIA 韩国风能产业协会", "", 2024, "海上风电开发商预期"),
@@ -1025,6 +1116,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 1, 0.30, 1, 1, 0.30),
     onshore_tariff_range=(0.050, 0.090),
     offshore_tariff_range=(0.0, 0.0),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=15.0, offshore_base_om=35.0, escalation_rate=0.025,
+        onshore_capex_pct=0.013, offshore_capex_pct=0.025,
+        rationale="澳大利亚运维市场成熟，固定单价法最普遍。通胀2.5%。AUD计价需注意汇率风险。",
+        sources="BNEF Australia RE Outlook 2024; AEMO/CER",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "onshore", 7.0, 10.0, "Clean Energy Council Australia", "", 2024, "含 LGC 绿证收入"),
         MarketBenchmark("WACC", "all", 5.0, 7.0, "IRENA Cost of Financing RE 2023", "https://www.irena.org", 2023, "发达市场中等水平"),
@@ -1115,6 +1213,13 @@ _register(CountryProfile(
     income_tax_holiday=(1, 5, 0.0, 6, 10, 0.10),
     onshore_tariff_range=(0.065, 0.085),
     offshore_tariff_range=(0.106, 0.161),
+    om_defaults=CountryOMDefaults(
+        recommended_method="fixed_escalation",
+        onshore_base_om=16.0, offshore_base_om=42.0, escalation_rate=0.015,
+        onshore_capex_pct=0.014, offshore_capex_pct=0.028,
+        rationale="台湾海上风电运维成本偏高(台风+远岸)。参考R3竞标项目O&M报价。通胀低(1.5%)。",
+        sources="BNEF Taiwan Offshore Wind Market 2024; BOE/MOEA",
+    ),
     benchmarks=[
         MarketBenchmark("Equity IRR", "offshore", 7.0, 10.0, "经济部能源局 FIT 定价机制", "", 2024, "FIT 电价隐含回报"),
         MarketBenchmark("Equity IRR", "onshore", 8.0, 11.0, "经济部能源局 RE 政策框架", "", 2024, "陆上风电 FIT"),
