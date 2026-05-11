@@ -1052,8 +1052,16 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
         default_tariff = 0.0638 if is_offshore else 0.0434
 
     tariff = st.sidebar.number_input("含税电价 (USD/kWh)", 0.001, 0.500, default_tariff, step=0.001, format="%.4f")
+    _tariff_policy = getattr(profile, 'offshore_tariff_policy', '') if is_offshore else getattr(profile, 'onshore_tariff_policy', '')
+    _tariff_mech = getattr(profile, 'tariff_mechanism', '')
+    if _tariff_policy:
+        with st.sidebar.expander(f"📋 {selected_display} {'海上' if is_offshore else '陆上'}电价政策", expanded=False):
+            if _tariff_mech:
+                st.markdown(f"**Mechanism**: {_tariff_mech}")
+            st.markdown(f"**Range**: {_tariff_range[0]:.4f} ~ {_tariff_range[1]:.4f} USD/kWh")
+            st.markdown(f"**Policy**: {_tariff_policy}")
     if _sens_help:
-        st.sidebar.caption(f"⚡⚡ **最高敏感** | 电价±0.01$/kWh ≈ IRR±1~2pp。{selected_display}参考: {'海上' if is_offshore else '陆上'} {_tariff_range[0]:.4f}~{_tariff_range[1]:.4f} USD/kWh")
+        st.sidebar.caption(f"⚡⚡ **最高敏感** | ±0.01$/kWh ≈ IRR±1~2pp。{selected_display}参考: {'海上' if is_offshore else '陆上'} {_tariff_range[0]:.4f}~{_tariff_range[1]:.4f} USD/kWh")
     vat_rate = st.sidebar.number_input("增值税率 (%)", 0.0, 20.0, default_vat, step=1.0) / 100.0
     vat_refund = st.sidebar.number_input("即征即退比例 (%)", 0.0, 100.0, 50.0 if country_name == "China" else 0.0, step=5.0) / 100.0
     income_tax_rate = st.sidebar.number_input("所得税率 (%)", 0.0, 35.0, default_cit, step=1.0) / 100.0
