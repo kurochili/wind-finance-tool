@@ -151,6 +151,9 @@ class CountryProfile:
     # ---- 电价参考 ----
     onshore_tariff_range: Tuple[float, float] = (0.0, 0.0)
     offshore_tariff_range: Tuple[float, float] = (0.0, 0.0)
+    onshore_tariff_policy: str = ""
+    offshore_tariff_policy: str = ""
+    tariff_mechanism: str = ""
 
     # ---- 运维推荐 ----
     om_defaults: CountryOMDefaults = field(default_factory=CountryOMDefaults)
@@ -193,6 +196,9 @@ _register(CountryProfile(
     education_surcharge_rate=0.05,
     onshore_tariff_range=(0.027, 0.058),
     offshore_tariff_range=(0.056, 0.078),
+    tariff_mechanism="Competitive bidding (market-based)",
+    onshore_tariff_policy="2021+ full parity: competitive bidding, no subsidy. Regional benchmark 0.193-0.414 CNY/kWh (I-IV resource zones). Source: NDRC [2021] No.833",
+    offshore_tariff_policy="2022+ full parity: competitive bidding by province. Reference: Guangdong 0.40-0.55 CNY/kWh, Fujian 0.38-0.45 CNY/kWh. Source: Provincial DRC announcements",
     om_defaults=CountryOMDefaults(
         recommended_method="chinese_feasibility",
         onshore_base_om=12.0, offshore_base_om=25.0, escalation_rate=0.02,
@@ -315,6 +321,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 4, 0.0, 5, 13, 0.10),
     onshore_tariff_range=(0.070, 0.076),
     offshore_tariff_range=(0.077, 0.085),
+    tariff_mechanism="FIT (transitioning to competitive bidding)",
+    onshore_tariff_policy="Decision 39/2018/QD-TTg: FIT 8.5 UScent/kWh (1,928 VND) for 20 years. Decision 1508 (2025): pilot auction framework under development. Source: MOIT/EVN",
+    offshore_tariff_policy="Decision 39/2018: Nearshore FIT 9.8 UScent/kWh (2,223 VND). Decision 1508/QD-BCT (2025.05.30): Nearshore FIT 2,186.1 VND/kWh (~0.085 USD), valid for 20 years. Offshore (6+ nautical miles): pending new decree. Source: MOIT",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=15.0, offshore_base_om=28.0, escalation_rate=0.02,
@@ -469,6 +478,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 7, 0.0, 8, 14, 0.10),
     onshore_tariff_range=(0.070, 0.100),
     offshore_tariff_range=(0.090, 0.120),
+    tariff_mechanism="FIT + GEAP auction",
+    onshore_tariff_policy="FIT-All (ERC Resolution 2018): 7.40 PHP/kWh (~0.13 USD) for 20 years. Green Energy Auction Program (GEAP): Round 1/2 achieved 5.5-6.0 PHP/kWh. Source: DOE/ERC Philippines",
+    offshore_tariff_policy="Offshore Wind Roadmap (DOE 2022): Target 21 GW by 2040. No specific FIT yet; expected bilateral PSA or auction-based tariff 0.09-0.12 USD/kWh. Source: DOE Circular DC2022-09-0034",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=18.0, offshore_base_om=35.0, escalation_rate=0.025,
@@ -559,6 +571,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 8, 0.0, 9, 13, 0.10),
     onshore_tariff_range=(0.075, 0.089),
     offshore_tariff_range=(0.0, 0.0),
+    tariff_mechanism="FIT (Adder) + PPA auction",
+    onshore_tariff_policy="AEDP 2024: Adder 3.50 THB/kWh on top of wholesale (~1.5-2.0 THB), total ~5.0-5.5 THB/kWh (~0.075-0.089 USD). ERC competitive bidding for new projects. Source: EPPO/ERC Thailand",
+    offshore_tariff_policy="No offshore wind projects or tariff policy yet. PDP 2024 includes offshore wind targets post-2030. Source: EPPO Thailand",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=14.0, offshore_base_om=30.0, escalation_rate=0.02,
@@ -648,6 +663,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 5, 0.0, 6, 10, 0.11),
     onshore_tariff_range=(0.065, 0.095),
     offshore_tariff_range=(0.0, 0.0),
+    tariff_mechanism="BOOT PPA (MEMR regulation)",
+    onshore_tariff_policy="MEMR Regulation 5/2025: BOOT scheme, PPA with PLN up to 30 years. Tariff = BPP (regional generation cost) ceiling. Typical 6.5-9.5 UScent/kWh depending on region. Sulawesi/NTT higher. Source: MEMR/PLN Indonesia",
+    offshore_tariff_policy="No offshore wind tariff regulation yet. RUPTL 2024 includes offshore exploration. Source: PLN RUPTL",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=16.0, offshore_base_om=32.0, escalation_rate=0.03,
@@ -737,6 +755,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 5, 0.0, 6, 10, 0.12),
     onshore_tariff_range=(0.060, 0.085),
     offshore_tariff_range=(0.0, 0.0),
+    tariff_mechanism="NEDA FIT + LSS competitive bidding",
+    onshore_tariff_policy="SEDA FIT (2022 revision): 24-38 sen/kWh (~0.051-0.081 USD). Large Scale Solar/Wind (LSS) auctions achieve lower rates. Corporate PPA growing. Source: SEDA/Energy Commission Malaysia",
+    offshore_tariff_policy="No offshore wind policy or projects yet. NETR 2050 roadmap under study. Source: MOT/SEDA Malaysia",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=14.0, offshore_base_om=28.0, escalation_rate=0.02,
@@ -826,6 +847,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 9, 0.0, 10, 12, 0.10),
     onshore_tariff_range=(0.070, 0.100),
     offshore_tariff_range=(0.0, 0.0),
+    tariff_mechanism="Direct PPA with EdC/licensee",
+    onshore_tariff_policy="Bilateral PPA with EdC (Electricite du Cambodge). Tariff negotiated per project, typical 7-10 UScent/kWh for 20-25 years. No standardized FIT for wind. Source: EAC/MME Cambodia",
+    offshore_tariff_policy="No offshore wind development. Coastline limited. Source: EAC Cambodia",
     om_defaults=CountryOMDefaults(
         recommended_method="capex_percentage",
         onshore_base_om=16.0, offshore_base_om=30.0, escalation_rate=0.025,
@@ -915,6 +939,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 1, 0.2337, 1, 1, 0.2337),
     onshore_tariff_range=(0.100, 0.160),
     offshore_tariff_range=(0.190, 0.260),
+    tariff_mechanism="FIT + FIP (Feed-in Premium)",
+    onshore_tariff_policy="FIT (METI 2024): <50kW 16 JPY, >=50kW auction-based ~11-15 JPY/kWh (~0.10-0.16 USD). FIP premium for larger projects. Source: METI Procurement Price Committee",
+    offshore_tariff_policy="Auction (METI/GIO): Round 1 Akita/Chiba ~29 JPY/kWh (~0.19 USD). Round 2+ expected 20-26 JPY/kWh (~0.19-0.26 USD). FIT ceiling 36 JPY/kWh for legacy projects. Source: METI/GIO Japan",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=20.0, offshore_base_om=45.0, escalation_rate=0.015,
@@ -1016,6 +1043,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 1, 0.242, 1, 1, 0.242),
     onshore_tariff_range=(0.080, 0.120),
     offshore_tariff_range=(0.127, 0.175),
+    tariff_mechanism="RPS + REC + Fixed-price PPA",
+    onshore_tariff_policy="RPS system: SMP (market price ~50-70 KRW) + REC (wind multiplier 1.0-1.2). Total ~100-160 KRW/kWh (~0.08-0.12 USD). Long-term fixed-price PPA auction available. Source: MOTIE/KPX Korea",
+    offshore_tariff_policy="REC weight 2.0-3.5x for offshore (distance-based). Fixed-price auction: 168-233 KRW/kWh (~0.127-0.175 USD) for 20 years. Ulsan/Shinan large projects in pipeline. Source: MOTIE Korea",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=18.0, offshore_base_om=40.0, escalation_rate=0.02,
@@ -1116,6 +1146,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 1, 0.30, 1, 1, 0.30),
     onshore_tariff_range=(0.050, 0.090),
     offshore_tariff_range=(0.0, 0.0),
+    tariff_mechanism="Merchant + PPA + LGC",
+    onshore_tariff_policy="Merchant market (NEM/WEM spot) + bilateral PPA + LGC (Large-scale Generation Certificates ~30-45 AUD/MWh). Total revenue 70-130 AUD/MWh (~0.050-0.090 USD). CfD auctions emerging. Source: CER/AEMO Australia",
+    offshore_tariff_policy="Offshore Electricity Infrastructure Act 2021: Declared areas (Gippsland, Hunter, Illawarra). No tariff mechanism yet; expected CfD or PPA-based. First projects 2028+. Source: DCCEEW Australia",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=15.0, offshore_base_om=35.0, escalation_rate=0.025,
@@ -1213,6 +1246,9 @@ _register(CountryProfile(
     income_tax_holiday=(1, 5, 0.0, 6, 10, 0.10),
     onshore_tariff_range=(0.065, 0.085),
     offshore_tariff_range=(0.106, 0.161),
+    tariff_mechanism="FIT + competitive auction",
+    onshore_tariff_policy="BOE FIT 2025: 1-30kW 8.6595 TWD, >30kW 2.1319-2.7826 TWD/kWh. ~0.065-0.085 USD/kWh for 20 years. Source: Bureau of Energy (BOE) Taiwan",
+    offshore_tariff_policy="BOE FIT 2025: 4.5085 TWD/kWh (~0.139 USD) for 20 years (capacity weighted). Auction (Round 3+): 2.2-2.5 TWD/kWh (~0.068-0.077 USD). CPPA route also available. Changhua/Yunlin projects 0.106-0.161 USD/kWh. Source: BOE/MOEA Taiwan",
     om_defaults=CountryOMDefaults(
         recommended_method="fixed_escalation",
         onshore_base_om=16.0, offshore_base_om=42.0, escalation_rate=0.015,
