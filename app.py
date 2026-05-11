@@ -64,6 +64,7 @@ from wind_finance.reverse_solver import (
     solve_tariff_for_target_irr,
     solve_tariff_for_zero_npv,
     solve_turbine_price_for_target_lcoe,
+    solve_turbine_price_for_target_irr,
 )
 from wind_finance import db as _db
 
@@ -2134,71 +2135,171 @@ def render_full_assessment(inputs: WindFarmFinancialInputs, result: CalculationR
 
 
 def reverse_calc_panel(inputs: WindFarmFinancialInputs):
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "目标IRR→电价", "目标LCOE→投资", "目标IRR→小时数", "目标LCOE→风机价格",
-    ])
-    irr_labels = {"project_before_tax": "全投资税前", "project_after_tax": "全投资税后", "equity": "资本金"}
+    is_offshore = inputs.basic.project_type == "offshore"
+    has_offshore_epc = inputs.investment.offshore_detail is not None
+    has_onshore_detail = inputs.investment.onshore_detail is not None
 
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "IRR->Tariff", "LCOE->CAPEX", "IRR->Hours", "LCOE->Turbine Price", "IRR->Turbine Price",
+    ])
+    irr_labels = {"project_before_tax": "Project Pre-tax", "project_after_tax": "Project After-tax", "equity": "Equity"}
+
+    # ── Tab 1: IRR -> Tariff ──
     with tab1:
+        st.caption("Given target IRR, solve for the required tariff (USD/kWh)")
         c1, c2 = st.columns(2)
-        t_irr = c1.number_input("目标IRR(%)", 1.0, 30.0, 8.0, step=0.5, key="rv1_irr") / 100.0
-        t_type = c2.selectbox("IRR类型", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv1_type")
-        if st.button("计算电价", key="rv1_btn"):
-            with st.spinner("求解中..."):
+        t_irr = c1.number_input("Target IRR (%)", 1.0, 30.0, 8.0, step=0.5, key="rv1_irr") / 100.0
+        t_type = c2.selectbox("IRR Type", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv1_type")
+        if st.button("Solve Tariff", key="rv1_btn"):
+            with st.spinner("Solving..."):
                 try:
                     t = solve_tariff_for_target_irr(inputs, t_irr, t_type)
-                    st.success(f"含税电价: **{t:.5f} USD/kWh** ({t * 7.1:.4f} 元/kWh)")
+                    st.success(f"Tariff (incl. tax): **{t:.5f} USD/kWh** ({t * 7.1:.4f} CNY/kWh)")
+                    with st.expander("Algorithm", expanded=False):
+                        st.markdown("""
+**Method**: Brent's method (scipy.optimize.brentq) iteratively adjusts tariff until IRR matches target.
+**Standard**: DCF-based IRR per IEC/AACE, consistent with IFC/BNEF/Chinese feasibility study methodology.
+**Country-specific**: Tax rates, VAT refund, income tax holidays are already embedded in the calculation.
+                        """)
                 except Exception as e:
-                    st.error(f"求解失败: {e}")
+                    st.error(f"Failed: {e}")
 
+    # ── Tab 2: LCOE -> CAPEX ──
     with tab2:
-        t_lcoe = st.number_input("目标LCOE (USD/kWh)", 0.001, 0.200, 0.030, step=0.001, format="%.4f", key="rv2_lcoe")
-        if st.button("计算投资", key="rv2_btn"):
-            with st.spinner("求解中..."):
+        st.caption("Given target LCOE, solve for the maximum allowable CAPEX (USD/kW)")
+        t_lcoe = st.number_input("Target LCOE (USD/kWh)", 0.001, 0.200, 0.030, step=0.001, format="%.4f", key="rv2_lcoe")
+        if st.button("Solve CAPEX", key="rv2_btn"):
+            with st.spinner("Solving..."):
                 try:
                     inv = solve_investment_for_target_lcoe(inputs, t_lcoe)
-                    st.success(f"单位千瓦投资: **{inv:.1f} USD/kW** ({inv * 7.1:.0f} 元/kW)")
+                    current_inv = inputs.investment.resolve_unit_investment()
+                    delta = inv - current_inv
+                    sign = "+" if delta >= 0 else ""
+                    st.success(f"Max CAPEX: **{inv:.1f} USD/kW** ({inv * 7.1:.0f} CNY/kW)")
+                    st.info(f"vs current {current_inv:.1f} USD/kW: {sign}{delta:.1f} USD/kW ({sign}{delta/current_inv:.1%})")
+                    with st.expander("Algorithm", expanded=False):
+                        st.markdown("""
+**Method**: Brent's method adjusts unit_static_investment until LCOE = target.
+**Note**: CAPEX change affects depreciation, interest, and O&M (if % of CAPEX method is used), so iterative solving is necessary.
+                        """)
                 except Exception as e:
-                    st.error(f"求解失败: {e}")
+                    st.error(f"Failed: {e}")
 
+    # ── Tab 3: IRR -> Hours ──
     with tab3:
+        st.caption("Given target IRR, solve for the minimum required full-load hours")
         c1, c2 = st.columns(2)
-        t_irr2 = c1.number_input("目标IRR(%)", 1.0, 30.0, 8.0, step=0.5, key="rv3_irr") / 100.0
-        t_type2 = c2.selectbox("IRR类型", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv3_type")
-        if st.button("计算小时数", key="rv3_btn"):
-            with st.spinner("求解中..."):
+        t_irr2 = c1.number_input("Target IRR (%)", 1.0, 30.0, 8.0, step=0.5, key="rv3_irr") / 100.0
+        t_type2 = c2.selectbox("IRR Type", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv3_type")
+        if st.button("Solve Hours", key="rv3_btn"):
+            with st.spinner("Solving..."):
                 try:
                     h = solve_hours_for_target_irr(inputs, t_irr2, t_type2)
-                    st.success(f"最低满负荷小时数: **{h:.0f} h**")
+                    current_h = inputs.basic.full_load_hours
+                    delta_h = h - current_h
+                    sign_h = "+" if delta_h >= 0 else ""
+                    st.success(f"Min full-load hours: **{h:.0f} h**")
+                    st.info(f"vs current {current_h} h: {sign_h}{delta_h:.0f} h ({sign_h}{delta_h/current_h:.1%})")
+                    with st.expander("Algorithm", expanded=False):
+                        st.markdown("""
+**Method**: Brent's method adjusts full_load_hours until IRR = target.
+**Use case**: Cross-validate with wind resource assessment (P50/P75/P90 exceedance levels).
+                        """)
                 except Exception as e:
-                    st.error(f"求解失败: {e}")
+                    st.error(f"Failed: {e}")
 
+    # ── Tab 4: LCOE -> Turbine Price ──
     with tab4:
-        has_epc = inputs.investment.offshore_detail is not None
-        if not has_epc:
-            st.info("此功能需要海上项目且启用了 EPC 明细。请在侧边栏选择「海上风电」并勾选「使用 EPC 明细计算投资」。")
+        st.caption("Given target LCOE, solve for the maximum turbine OEM price (USD/kW)")
+        _rv4_show_current_price(inputs, has_offshore_epc, has_onshore_detail)
+
+        t_lcoe4 = st.number_input(
+            "Target LCOE (USD/kWh)", 0.001, 0.200, 0.040, step=0.001, format="%.4f", key="rv4_lcoe",
+        )
+        if st.button("Solve Turbine Price (LCOE)", key="rv4_btn"):
+            with st.spinner("Solving..."):
+                try:
+                    price = solve_turbine_price_for_target_lcoe(inputs, t_lcoe4)
+                    if price is not None:
+                        _rv_show_turbine_result(inputs, price, has_offshore_epc, has_onshore_detail,
+                                                f"LCOE={t_lcoe4:.4f} USD/kWh")
+                    else:
+                        st.error("Solve failed.")
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+
+        with st.expander("Algorithm & Approach", expanded=False):
+            st.markdown(f"""
+**Project type**: {'Offshore' if is_offshore else 'Onshore'}
+**Detail available**: {'Offshore EPC breakdown' if has_offshore_epc else ('Onshore investment breakdown' if has_onshore_detail else 'No breakdown (TSI+BOP mode)')}
+
+| Scenario | How turbine price is adjusted |
+|----------|-------------------------------|
+| **Offshore EPC** | Adjust `turbine_price_per_kw` in OEM cost, recalculate total EPC |
+| **Onshore detail** | Adjust turbine price within `equipment_and_installation`, keep BOP/civil/other fixed |
+| **No detail (Quick)** | Assume turbine = 60% of TSI, adjust TSI proportionally |
+
+**Standard**: LCOE = Total lifecycle cost / Total generation (kWh), per IRENA/BNEF/IEC definition.
+            """)
+
+    # ── Tab 5: IRR -> Turbine Price ──
+    with tab5:
+        st.caption("Given target IRR, solve for the maximum turbine OEM price (USD/kW)")
+        _rv4_show_current_price(inputs, has_offshore_epc, has_onshore_detail, key_suffix="5")
+
+        c1, c2 = st.columns(2)
+        t_irr5 = c1.number_input("Target IRR (%)", 1.0, 30.0, 8.0, step=0.5, key="rv5_irr") / 100.0
+        t_type5 = c2.selectbox("IRR Type", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv5_type")
+        if st.button("Solve Turbine Price (IRR)", key="rv5_btn"):
+            with st.spinner("Solving..."):
+                try:
+                    price = solve_turbine_price_for_target_irr(inputs, t_irr5, t_type5)
+                    if price is not None:
+                        _rv_show_turbine_result(inputs, price, has_offshore_epc, has_onshore_detail,
+                                                f"IRR={t_irr5:.1%} ({irr_labels[t_type5]})")
+                    else:
+                        st.error("Solve failed.")
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+
+
+def _rv4_show_current_price(inputs, has_offshore_epc, has_onshore_detail, key_suffix="4"):
+    """显示当前风机价格信息"""
+    if has_offshore_epc:
+        cp = inputs.investment.offshore_detail.oem.turbine_price_per_kw
+        st.info(f"Offshore EPC mode | Current turbine OEM: **{cp:,.1f} USD/kW**")
+    elif has_onshore_detail:
+        onshore = inputs.investment.onshore_detail
+        if onshore.turbine_price_per_kw > 0:
+            cp = onshore.turbine_price_per_kw
+            st.info(f"Onshore detail mode | Current turbine price: **{cp:,.1f} USD/kW**")
         else:
-            current_price = inputs.investment.offshore_detail.oem.turbine_price_per_kw
-            st.caption(f"当前风机 OEM 售价: **{current_price:,.1f} USD/kW**")
-            t_lcoe4 = st.number_input(
-                "目标 LCOE (USD/kWh)", 0.001, 0.200, 0.040, step=0.001, format="%.4f", key="rv4_lcoe",
-            )
-            if st.button("反算风机价格", key="rv4_btn"):
-                with st.spinner("求解中..."):
-                    try:
-                        price = solve_turbine_price_for_target_lcoe(inputs, t_lcoe4)
-                        if price is not None:
-                            delta = price - current_price
-                            sign = "+" if delta >= 0 else ""
-                            st.success(
-                                f"满足 LCOE={t_lcoe4:.4f} USD/kWh 的风机 OEM 售价: "
-                                f"**{price:,.1f} USD/kW** ({price * 7.1:,.0f} 元/kW)\n\n"
-                                f"相比当前 {current_price:,.1f} USD/kW 变化: {sign}{delta:,.1f} USD/kW ({sign}{delta/current_price:.1%})"
-                            )
-                        else:
-                            st.error("无法求解，请检查是否已配置海上 EPC 明细。")
-                    except Exception as e:
-                        st.error(f"求解失败: {e}")
+            equip = onshore.equipment_and_installation
+            est = equip * 0.70
+            st.info(f"Onshore detail mode | Equipment: {equip:,.1f} USD/kW (turbine est. ~{est:,.0f} USD/kW @ 70%)")
+    else:
+        tsi = inputs.investment.unit_static_investment * 0.60
+        st.info(f"Quick mode (no breakdown) | Estimated turbine price: ~{tsi:,.0f} USD/kW (60% of CAPEX)")
+
+
+def _rv_show_turbine_result(inputs, price, has_offshore_epc, has_onshore_detail, target_desc):
+    """显示风机价格反算结果"""
+    if has_offshore_epc:
+        current = inputs.investment.offshore_detail.oem.turbine_price_per_kw
+    elif has_onshore_detail and inputs.investment.onshore_detail.turbine_price_per_kw > 0:
+        current = inputs.investment.onshore_detail.turbine_price_per_kw
+    elif has_onshore_detail:
+        current = inputs.investment.onshore_detail.equipment_and_installation * 0.70
+    else:
+        current = inputs.investment.unit_static_investment * 0.60
+
+    delta = price - current
+    sign = "+" if delta >= 0 else ""
+    st.success(
+        f"For {target_desc}:\n\n"
+        f"Max turbine OEM price: **{price:,.1f} USD/kW** ({price * 7.1:,.0f} CNY/kW)"
+    )
+    st.info(f"vs current ~{current:,.1f} USD/kW: {sign}{delta:,.1f} USD/kW ({sign}{delta/max(current,1):.1%})")
 
 
 # ════════════════════════════════════════════════════════════════════════════
