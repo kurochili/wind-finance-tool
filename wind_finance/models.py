@@ -216,6 +216,9 @@ class OnshoreInvestment:
     storage_cost: float = 0.0                # 储能工程费（USD/kW，如有配套储能）
     grid_connection_cost: float = 0.0        # 送出线路/电网接入费（USD/kW）
 
+    turbine_price_per_kw: float = 0.0        # 风机裸机单价（USD/kW），从equipment中拆分，便于反算
+    non_turbine_equip_per_kw: float = 0.0    # 非风机设备（塔筒+箱变+线路+升压站等，USD/kW）
+
     @property
     def subtotal_before_contingency(self) -> float:
         """预备费前小计（USD/kW）"""
