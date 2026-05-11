@@ -2142,172 +2142,170 @@ def render_full_assessment(inputs: WindFarmFinancialInputs, result: CalculationR
         )
 
 
+def _rv_auto_params_box(inputs: WindFarmFinancialInputs, exclude: str = ""):
+    """Display auto-extracted params from sidebar in a compact box"""
+    b = inputs.basic
+    inv = inputs.investment
+    fin = inputs.financing
+    tax = inputs.tax_financial
+    ops = inputs.operational
+    capex = inv.resolve_unit_investment()
+    cap_mw = b.num_turbines * b.turbine_capacity_mw
+
+    lines = []
+    if exclude != "tariff":
+        lines.append(f"Tariff: {tax.tariff_with_tax:.4f} USD/kWh")
+    if exclude != "hours":
+        lines.append(f"P90: {b.full_load_hours} h")
+    lines.append(f"Capacity: {b.num_turbines} x {b.turbine_capacity_mw} MW = {cap_mw:.0f} MW")
+    if exclude != "capex" and exclude != "turbine":
+        lines.append(f"CAPEX: {capex:.0f} USD/kW")
+    if exclude == "turbine":
+        if inv.offshore_detail:
+            non_t = capex - inv.offshore_detail.oem.turbine_price_per_kw
+            lines.append(f"Non-turbine EPC: {non_t:.0f} USD/kW (auto)")
+        elif inv.onshore_detail:
+            non_eq = inv.onshore_detail.civil_works + inv.onshore_detail.other_costs + inv.onshore_detail.construction_auxiliary
+            lines.append(f"BOP/Civil/Other: {non_eq:.0f} USD/kW (auto)")
+        else:
+            bop_est = capex * 0.40
+            lines.append(f"BOP est.: {bop_est:.0f} USD/kW (40% of CAPEX)")
+    lines.append(f"Equity: {fin.equity_ratio:.0%} | Rate: {fin.long_term_loan_rate:.1%} x {fin.loan_term_years}yr")
+    lines.append(f"O&M: {ops.om_method} | Oper: {ops.operation_years}yr")
+    lines.append(f"Tax: CIT {tax.income_tax_rate:.0%} | VAT {tax.vat_rate:.0%}")
+
+    with st.expander("Auto-extracted from sidebar (no need to re-enter)", expanded=False):
+        st.code("\n".join(lines), language=None)
+
+
 def reverse_calc_panel(inputs: WindFarmFinancialInputs):
     is_offshore = inputs.basic.project_type == "offshore"
     has_offshore_epc = inputs.investment.offshore_detail is not None
     has_onshore_detail = inputs.investment.onshore_detail is not None
 
+    st.info(
+        "**How it works**: The solver automatically reads ALL parameters you entered in the sidebar. "
+        "You only need to enter the **target value** below. The solver iterates to find the unknown."
+    )
+
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "IRR->Tariff", "LCOE->CAPEX", "IRR->Hours", "LCOE->Turbine Price", "IRR->Turbine Price",
+        "IRR -> Tariff", "LCOE -> CAPEX", "IRR -> Hours",
+        "LCOE -> Turbine Price", "IRR -> Turbine Price",
     ])
     irr_labels = {"project_before_tax": "Project Pre-tax", "project_after_tax": "Project After-tax", "equity": "Equity"}
 
     # ── Tab 1: IRR -> Tariff ──
     with tab1:
-        st.caption("Given target IRR, solve for the required tariff (USD/kWh)")
+        st.markdown("#### Known: everything except tariff. Solve: tariff")
+        st.caption("Scenario: You know the CAPEX, P90, financing, O&M etc. What tariff do you need to achieve target IRR?")
+        _rv_auto_params_box(inputs, exclude="tariff")
+
+        st.markdown("**Your input:**")
         c1, c2 = st.columns(2)
         t_irr = c1.number_input("Target IRR (%)", 1.0, 30.0, 8.0, step=0.5, key="rv1_irr") / 100.0
         t_type = c2.selectbox("IRR Type", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv1_type")
-        if st.button("Solve Tariff", key="rv1_btn"):
+        if st.button("Solve Tariff", key="rv1_btn", type="primary"):
             with st.spinner("Solving..."):
                 try:
                     t = solve_tariff_for_target_irr(inputs, t_irr, t_type)
-                    st.success(f"Tariff (incl. tax): **{t:.5f} USD/kWh** ({t * 7.1:.4f} CNY/kWh)")
-                    with st.expander("Algorithm", expanded=False):
-                        st.markdown("""
-**Method**: Brent's method (scipy.optimize.brentq) iteratively adjusts tariff until IRR matches target.
-**Standard**: DCF-based IRR per IEC/AACE, consistent with IFC/BNEF/Chinese feasibility study methodology.
-**Country-specific**: Tax rates, VAT refund, income tax holidays are already embedded in the calculation.
-                        """)
+                    st.success(f"Required tariff (incl. tax): **{t:.5f} USD/kWh** ({t * 7.1:.4f} CNY/kWh)")
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
     # ── Tab 2: LCOE -> CAPEX ──
     with tab2:
-        st.caption("Given target LCOE, solve for the maximum allowable CAPEX (USD/kW)")
+        st.markdown("#### Known: tariff, P90, financing, O&M. Solve: max CAPEX")
+        st.caption("Scenario: You know the tariff and all operating costs. What is the max investment you can afford?")
+        _rv_auto_params_box(inputs, exclude="capex")
+
+        st.markdown("**Your input:**")
         t_lcoe = st.number_input("Target LCOE (USD/kWh)", 0.001, 0.200, 0.030, step=0.001, format="%.4f", key="rv2_lcoe")
-        if st.button("Solve CAPEX", key="rv2_btn"):
+        if st.button("Solve CAPEX", key="rv2_btn", type="primary"):
             with st.spinner("Solving..."):
                 try:
                     inv = solve_investment_for_target_lcoe(inputs, t_lcoe)
-                    current_inv = inputs.investment.resolve_unit_investment()
-                    delta = inv - current_inv
-                    sign = "+" if delta >= 0 else ""
                     st.success(f"Max CAPEX: **{inv:.1f} USD/kW** ({inv * 7.1:.0f} CNY/kW)")
-                    st.info(f"vs current {current_inv:.1f} USD/kW: {sign}{delta:.1f} USD/kW ({sign}{delta/current_inv:.1%})")
-                    with st.expander("Algorithm", expanded=False):
-                        st.markdown("""
-**Method**: Brent's method adjusts unit_static_investment until LCOE = target.
-**Note**: CAPEX change affects depreciation, interest, and O&M (if % of CAPEX method is used), so iterative solving is necessary.
-                        """)
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
     # ── Tab 3: IRR -> Hours ──
     with tab3:
-        st.caption("Given target IRR, solve for the minimum required full-load hours")
+        st.markdown("#### Known: tariff, CAPEX, financing, O&M. Solve: min P90 hours")
+        st.caption("Scenario: You know the investment and tariff. What is the minimum wind resource required?")
+        _rv_auto_params_box(inputs, exclude="hours")
+
+        st.markdown("**Your input:**")
         c1, c2 = st.columns(2)
         t_irr2 = c1.number_input("Target IRR (%)", 1.0, 30.0, 8.0, step=0.5, key="rv3_irr") / 100.0
         t_type2 = c2.selectbox("IRR Type", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv3_type")
-        if st.button("Solve Hours", key="rv3_btn"):
+        if st.button("Solve Hours", key="rv3_btn", type="primary"):
             with st.spinner("Solving..."):
                 try:
                     h = solve_hours_for_target_irr(inputs, t_irr2, t_type2)
-                    current_h = inputs.basic.full_load_hours
-                    delta_h = h - current_h
-                    sign_h = "+" if delta_h >= 0 else ""
                     st.success(f"Min full-load hours: **{h:.0f} h**")
-                    st.info(f"vs current {current_h} h: {sign_h}{delta_h:.0f} h ({sign_h}{delta_h/current_h:.1%})")
-                    with st.expander("Algorithm", expanded=False):
-                        st.markdown("""
-**Method**: Brent's method adjusts full_load_hours until IRR = target.
-**Use case**: Cross-validate with wind resource assessment (P50/P75/P90 exceedance levels).
-                        """)
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
     # ── Tab 4: LCOE -> Turbine Price ──
     with tab4:
-        st.caption("Given target LCOE, solve for the maximum turbine OEM price (USD/kW)")
-        _rv4_show_current_price(inputs, has_offshore_epc, has_onshore_detail)
+        st.markdown("#### Known: BOP, tariff, P90, financing, O&M. Solve: max turbine price")
+        st.caption(
+            "Scenario: You know everything EXCEPT the turbine price. "
+            "What is the maximum price you can pay for the turbine OEM? "
+            "**You do NOT need to know or enter the turbine price** - that is what this solver finds."
+        )
+        _rv_auto_params_box(inputs, exclude="turbine")
 
+        st.markdown("**Your input:**")
         t_lcoe4 = st.number_input(
             "Target LCOE (USD/kWh)", 0.001, 0.200, 0.040, step=0.001, format="%.4f", key="rv4_lcoe",
         )
-        if st.button("Solve Turbine Price (LCOE)", key="rv4_btn"):
+        if st.button("Solve Turbine Price", key="rv4_btn", type="primary"):
             with st.spinner("Solving..."):
                 try:
                     price = solve_turbine_price_for_target_lcoe(inputs, t_lcoe4)
                     if price is not None:
-                        _rv_show_turbine_result(inputs, price, has_offshore_epc, has_onshore_detail,
-                                                f"LCOE={t_lcoe4:.4f} USD/kWh")
+                        st.success(f"Max turbine OEM price: **{price:,.1f} USD/kW** ({price * 7.1:,.0f} CNY/kW)")
+                        _rv_turbine_note(is_offshore, has_offshore_epc, has_onshore_detail)
                     else:
                         st.error("Solve failed.")
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
-        with st.expander("Algorithm & Approach", expanded=False):
-            st.markdown(f"""
-**Project type**: {'Offshore' if is_offshore else 'Onshore'}
-**Detail available**: {'Offshore EPC breakdown' if has_offshore_epc else ('Onshore investment breakdown' if has_onshore_detail else 'No breakdown (TSI+BOP mode)')}
-
-| Scenario | How turbine price is adjusted |
-|----------|-------------------------------|
-| **Offshore EPC** | Adjust `turbine_price_per_kw` in OEM cost, recalculate total EPC |
-| **Onshore detail** | Adjust turbine price within `equipment_and_installation`, keep BOP/civil/other fixed |
-| **No detail (Quick)** | Assume turbine = 60% of TSI, adjust TSI proportionally |
-
-**Standard**: LCOE = Total lifecycle cost / Total generation (kWh), per IRENA/BNEF/IEC definition.
-            """)
-
     # ── Tab 5: IRR -> Turbine Price ──
     with tab5:
-        st.caption("Given target IRR, solve for the maximum turbine OEM price (USD/kW)")
-        _rv4_show_current_price(inputs, has_offshore_epc, has_onshore_detail, key_suffix="5")
+        st.markdown("#### Known: BOP, tariff, P90, financing, O&M. Solve: max turbine price")
+        st.caption(
+            "Same as Tab 4, but target is IRR instead of LCOE. "
+            "**You do NOT need to know or enter the turbine price.**"
+        )
+        _rv_auto_params_box(inputs, exclude="turbine")
 
+        st.markdown("**Your input:**")
         c1, c2 = st.columns(2)
         t_irr5 = c1.number_input("Target IRR (%)", 1.0, 30.0, 8.0, step=0.5, key="rv5_irr") / 100.0
         t_type5 = c2.selectbox("IRR Type", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv5_type")
-        if st.button("Solve Turbine Price (IRR)", key="rv5_btn"):
+        if st.button("Solve Turbine Price", key="rv5_btn", type="primary"):
             with st.spinner("Solving..."):
                 try:
                     price = solve_turbine_price_for_target_irr(inputs, t_irr5, t_type5)
                     if price is not None:
-                        _rv_show_turbine_result(inputs, price, has_offshore_epc, has_onshore_detail,
-                                                f"IRR={t_irr5:.1%} ({irr_labels[t_type5]})")
+                        st.success(f"Max turbine OEM price: **{price:,.1f} USD/kW** ({price * 7.1:,.0f} CNY/kW)")
+                        _rv_turbine_note(is_offshore, has_offshore_epc, has_onshore_detail)
                     else:
                         st.error("Solve failed.")
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
 
-def _rv4_show_current_price(inputs, has_offshore_epc, has_onshore_detail, key_suffix="4"):
-    """显示当前风机价格信息"""
+def _rv_turbine_note(is_offshore, has_offshore_epc, has_onshore_detail):
+    """Show a note about what was held constant"""
     if has_offshore_epc:
-        cp = inputs.investment.offshore_detail.oem.turbine_price_per_kw
-        st.info(f"Offshore EPC mode | Current turbine OEM: **{cp:,.1f} USD/kW**")
+        st.caption("Held constant: tower, installation, foundation, BOP, all non-OEM EPC items")
     elif has_onshore_detail:
-        onshore = inputs.investment.onshore_detail
-        if onshore.turbine_price_per_kw > 0:
-            cp = onshore.turbine_price_per_kw
-            st.info(f"Onshore detail mode | Current turbine price: **{cp:,.1f} USD/kW**")
-        else:
-            equip = onshore.equipment_and_installation
-            est = equip * 0.70
-            st.info(f"Onshore detail mode | Equipment: {equip:,.1f} USD/kW (turbine est. ~{est:,.0f} USD/kW @ 70%)")
+        st.caption("Held constant: civil works, other costs, contingency, storage, grid connection")
     else:
-        tsi = inputs.investment.unit_static_investment * 0.60
-        st.info(f"Quick mode (no breakdown) | Estimated turbine price: ~{tsi:,.0f} USD/kW (60% of CAPEX)")
-
-
-def _rv_show_turbine_result(inputs, price, has_offshore_epc, has_onshore_detail, target_desc):
-    """显示风机价格反算结果"""
-    if has_offshore_epc:
-        current = inputs.investment.offshore_detail.oem.turbine_price_per_kw
-    elif has_onshore_detail and inputs.investment.onshore_detail.turbine_price_per_kw > 0:
-        current = inputs.investment.onshore_detail.turbine_price_per_kw
-    elif has_onshore_detail:
-        current = inputs.investment.onshore_detail.equipment_and_installation * 0.70
-    else:
-        current = inputs.investment.unit_static_investment * 0.60
-
-    delta = price - current
-    sign = "+" if delta >= 0 else ""
-    st.success(
-        f"For {target_desc}:\n\n"
-        f"Max turbine OEM price: **{price:,.1f} USD/kW** ({price * 7.1:,.0f} CNY/kW)"
-    )
-    st.info(f"vs current ~{current:,.1f} USD/kW: {sign}{delta:,.1f} USD/kW ({sign}{delta/max(current,1):.1%})")
+        st.caption("Held constant: BOP portion (estimated 40% of CAPEX)")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -3105,7 +3103,7 @@ def main():
         unsafe_allow_html=True,
     )
 
-    page = st.tabs(["📈 项目评估", "📊 项目对比", "🗂️ 项目管理", "🌍 各国市场概览"])
+    page = st.tabs(["📈 项目评估", "🔄 反算工具", "📊 项目对比", "🗂️ 项目管理", "🌍 各国市场概览"])
 
     # ═══════════════════════════════════════════════════════
     # Tab 1: 项目评估（含侧边栏全分项编辑）
@@ -3141,20 +3139,46 @@ def main():
             st.markdown("---")
             render_full_assessment(inputs, result, key_prefix="main")
 
-            st.markdown("---")
-            st.markdown("### 🔄 反算工具")
-            reverse_calc_panel(inputs)
+            st.session_state["_reverse_inputs"] = inputs
 
     # ═══════════════════════════════════════════════════════
-    # Tab 2: 项目对比
+    # Tab 2: 反算工具（独立面板）
     # ═══════════════════════════════════════════════════════
     with page[1]:
+        st.header("🔄 反算工具 / Reverse Solver")
+        st.markdown(
+            "**使用方法**: 先在左侧栏填好项目参数（Quick / Detailed 模式），"
+            "或在 [项目评估] Tab 完成一次计算。本模块自动读取左侧栏参数，"
+            "您**只需输入目标值**，系统迭代求解未知量。"
+        )
+        if "_reverse_inputs" in st.session_state:
+            reverse_calc_panel(st.session_state["_reverse_inputs"])
+        elif "input_mode" in st.session_state and not st.session_state.get("input_mode", "").startswith("📤"):
+            try:
+                if st.session_state.get("input_mode", "").startswith("Quick"):
+                    rev_inputs = sidebar_inputs_quick()
+                else:
+                    rev_inputs = sidebar_inputs()
+                if rev_inputs is not None:
+                    reverse_calc_panel(rev_inputs)
+            except Exception:
+                st.warning("Please complete project parameters in the sidebar first, then switch to this tab.")
+        else:
+            st.warning(
+                "Please fill in project parameters in the sidebar (Quick or Detailed mode) "
+                "and run a calculation in the [Project Assessment] tab first."
+            )
+
+    # ═══════════════════════════════════════════════════════
+    # Tab 3: 项目对比
+    # ═══════════════════════════════════════════════════════
+    with page[2]:
         comparison_page()
 
     # ═══════════════════════════════════════════════════════
-    # Tab 3: 项目管理
+    # Tab 4: 项目管理
     # ═══════════════════════════════════════════════════════
-    with page[2]:
+    with page[3]:
         st.header("🗂️ 已保存的项目")
 
         if not st.session_state.projects:
@@ -3176,9 +3200,9 @@ def main():
             _render_project_list()
 
     # ═══════════════════════════════════════════════════════
-    # Tab 4: 各国市场概览
+    # Tab 5: 各国市场概览
     # ═══════════════════════════════════════════════════════
-    with page[3]:
+    with page[4]:
         render_market_overview()
 
 
