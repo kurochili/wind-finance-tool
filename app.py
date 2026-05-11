@@ -921,13 +921,13 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     c1, c2 = st.sidebar.columns(2)
     num_turbines = c1.number_input("机组台数", 1, 500, 28 if is_offshore else 16)
     turbine_mw = c2.number_input("单机容量(MW)", 1.0, 30.0, 18.0 if is_offshore else 6.25, step=0.5)
-    full_load_hours = st.sidebar.slider("满负荷小时数 (h)", 1000, 5000, 3138 if is_offshore else 2523)
+    full_load_hours = st.sidebar.number_input("满负荷小时数 (h)", 1000, 5000, 3138 if is_offshore else 2523, step=10)
     if _sens_help:
         st.sidebar.caption("⚡⚡ **最高敏感** | ±100h ≈ IRR±0.3~0.8pp。是决定项目盈利的核心参数，建议用P50/P75/P90区分风险场景。")
-    loss_rate = st.sidebar.slider("综合线损率 (%)", 0.0, 10.0, 3.0, step=0.5) / 100.0
+    loss_rate = st.sidebar.number_input("综合线损率 (%)", 0.0, 10.0, 3.0, step=0.5) / 100.0
     if _sens_help:
         st.sidebar.caption("🔵 **中敏感** | ±1% ≈ IRR±0.1~0.2pp。含厂用电+线路损耗，陆上2~4%，海上2~5%。")
-    construction_months = st.sidebar.slider("建设期 (月)", 6, 36, 24 if is_offshore else 12)
+    construction_months = st.sidebar.number_input("建设期 (月)", 6, 36, 24 if is_offshore else 12, step=1)
     if _sens_help:
         st.sidebar.caption("🔵 **中敏感** | 建设期延长→建设期利息增加→IRR下降。每多6个月约IRR-0.1~0.3pp。")
 
@@ -1023,13 +1023,13 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     default_rate = profile.typical_loan_rate * 100 if profile else 3.25
     default_term = profile.typical_loan_term if profile else 15
 
-    equity_ratio = st.sidebar.slider("资本金比例 (%)", 10.0, 50.0, default_eq, step=1.0) / 100.0
+    equity_ratio = st.sidebar.number_input("资本金比例 (%)", 10.0, 50.0, default_eq, step=1.0) / 100.0
     if _sens_help:
         st.sidebar.caption("⚡ **高敏感** | 资本金↑10% ≈ 资本金IRR↓2~4pp（杠杆效应减弱），但全投资IRR不变。影响资本金IRR和融资结构。")
-    loan_rate = st.sidebar.slider("贷款年利率 (%)", 0.5, 15.0, default_rate, step=0.25) / 100.0
+    loan_rate = st.sidebar.number_input("贷款年利率 (%)", 0.5, 15.0, default_rate, step=0.25, format="%.2f") / 100.0
     if _sens_help:
         st.sidebar.caption(f"⚡ **高敏感** | 利率±1% ≈ IRR±0.3~0.7pp。{selected_display}当前: {default_rate:.2f}%")
-    loan_term = st.sidebar.slider("贷款年限", 5, 25, default_term)
+    loan_term = st.sidebar.number_input("贷款年限", 5, 25, default_term, step=1)
     if _sens_help:
         st.sidebar.caption("🔵 **中敏感** | 延长贷款=前期还款压力小=资本金IRR提升，但总利息增加。")
 
@@ -1054,12 +1054,12 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     tariff = st.sidebar.number_input("含税电价 (USD/kWh)", 0.001, 0.500, default_tariff, step=0.001, format="%.4f")
     if _sens_help:
         st.sidebar.caption(f"⚡⚡ **最高敏感** | 电价±0.01$/kWh ≈ IRR±1~2pp。{selected_display}参考: {'海上' if is_offshore else '陆上'} {_tariff_range[0]:.4f}~{_tariff_range[1]:.4f} USD/kWh")
-    vat_rate = st.sidebar.slider("增值税率 (%)", 0.0, 20.0, default_vat, step=1.0) / 100.0
-    vat_refund = st.sidebar.slider("即征即退比例 (%)", 0.0, 100.0, 50.0 if country_name == "China" else 0.0, step=5.0) / 100.0
-    income_tax_rate = st.sidebar.slider("所得税率 (%)", 0.0, 35.0, default_cit, step=1.0) / 100.0
+    vat_rate = st.sidebar.number_input("增值税率 (%)", 0.0, 20.0, default_vat, step=1.0) / 100.0
+    vat_refund = st.sidebar.number_input("即征即退比例 (%)", 0.0, 100.0, 50.0 if country_name == "China" else 0.0, step=5.0) / 100.0
+    income_tax_rate = st.sidebar.number_input("所得税率 (%)", 0.0, 35.0, default_cit, step=1.0) / 100.0
     if _sens_help:
         st.sidebar.caption(f"🔵 **中敏感** | 所得税±5% ≈ IRR税后±0.2~0.4pp。{selected_display}: {default_cit:.0f}%{'，有风电优惠' if profile and profile.has_wind_tax_incentive else ''}")
-    discount_rate = st.sidebar.slider("基准折现率 (%)", 3.0, 15.0, 8.0, step=0.5) / 100.0
+    discount_rate = st.sidebar.number_input("基准折现率 (%)", 3.0, 15.0, 8.0, step=0.5) / 100.0
     if _sens_help:
         st.sidebar.caption("🔵 **中敏感** | 折现率不影响IRR，只影响NPV。折现率↑=NPV↓。8%为中国标准，海外项目常用WACC(6~10%)。")
 
@@ -1089,15 +1089,15 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     # ═══════════════════ 5. 运营成本分项 ═══════════════════
     st.sidebar.markdown("### 🔧 运营成本")
 
-    operation_years = st.sidebar.slider("运营期 (年)", 15, 35, 25 if is_offshore else 20)
+    operation_years = st.sidebar.number_input("运营期 (年)", 15, 35, 25 if is_offshore else 20, step=1)
     if _sens_help:
         st.sidebar.caption("⚡ **高敏感** | 延长运营期可提升IRR 0.3~1.0pp，但后期运维成本递增会削弱效果。海上25年、陆上20年为行业惯例。")
 
-    depreciation_years = st.sidebar.slider("折旧年限 (年)", 10, 25, 20)
+    depreciation_years = st.sidebar.number_input("折旧年限 (年)", 10, 25, 20, step=1)
     if _sens_help:
         st.sidebar.caption("🔵 **中敏感** | 影响年折旧额→利润→所得税。缩短折旧年限=前期少交税=IRR微升，但对银行还款计划无影响。")
 
-    residual_rate = st.sidebar.slider("残值率 (%)", 0.0, 10.0, 0.0 if is_offshore else 5.0, step=0.5) / 100.0
+    residual_rate = st.sidebar.number_input("残值率 (%)", 0.0, 10.0, 0.0 if is_offshore else 5.0, step=0.5) / 100.0
     if _sens_help:
         st.sidebar.caption("⚪ **低敏感** | 仅影响折旧基数和末年回收。海上通常0%（拆除成本抵消），陆上5%。")
 
