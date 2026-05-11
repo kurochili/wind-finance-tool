@@ -2248,15 +2248,12 @@ def reverse_calc_panel(inputs: WindFarmFinancialInputs):
 
     # ── Tab 4: LCOE -> Turbine Price ──
     with tab4:
-        st.markdown("#### Known: BOP, tariff, P90, financing, O&M. Solve: max turbine price")
-        st.caption(
-            "Scenario: You know everything EXCEPT the turbine price. "
-            "What is the maximum price you can pay for the turbine OEM? "
-            "**You do NOT need to know or enter the turbine price** - that is what this solver finds."
-        )
+        st.markdown("#### Solve: max turbine price (target = LCOE)")
+        st.caption("You do NOT need to know or enter the turbine price - that is what this solver finds.")
+        _rv_turbine_guide(is_offshore, has_offshore_epc, has_onshore_detail, inputs)
         _rv_auto_params_box(inputs, exclude="turbine")
 
-        st.markdown("**Your input:**")
+        st.markdown("**Your input (only 1 field):**")
         t_lcoe4 = st.number_input(
             "Target LCOE (USD/kWh)", 0.001, 0.200, 0.040, step=0.001, format="%.4f", key="rv4_lcoe",
         )
@@ -2266,7 +2263,7 @@ def reverse_calc_panel(inputs: WindFarmFinancialInputs):
                     price = solve_turbine_price_for_target_lcoe(inputs, t_lcoe4)
                     if price is not None:
                         st.success(f"Max turbine OEM price: **{price:,.1f} USD/kW** ({price * 7.1:,.0f} CNY/kW)")
-                        _rv_turbine_note(is_offshore, has_offshore_epc, has_onshore_detail)
+                        _rv_turbine_result_detail(is_offshore, has_offshore_epc, has_onshore_detail, inputs, price)
                     else:
                         st.error("Solve failed.")
                 except Exception as e:
@@ -2274,14 +2271,12 @@ def reverse_calc_panel(inputs: WindFarmFinancialInputs):
 
     # ── Tab 5: IRR -> Turbine Price ──
     with tab5:
-        st.markdown("#### Known: BOP, tariff, P90, financing, O&M. Solve: max turbine price")
-        st.caption(
-            "Same as Tab 4, but target is IRR instead of LCOE. "
-            "**You do NOT need to know or enter the turbine price.**"
-        )
+        st.markdown("#### Solve: max turbine price (target = IRR)")
+        st.caption("You do NOT need to know or enter the turbine price - that is what this solver finds.")
+        _rv_turbine_guide(is_offshore, has_offshore_epc, has_onshore_detail, inputs)
         _rv_auto_params_box(inputs, exclude="turbine")
 
-        st.markdown("**Your input:**")
+        st.markdown("**Your input (only 2 fields):**")
         c1, c2 = st.columns(2)
         t_irr5 = c1.number_input("Target IRR (%)", 1.0, 30.0, 8.0, step=0.5, key="rv5_irr") / 100.0
         t_type5 = c2.selectbox("IRR Type", list(irr_labels.keys()), 1, format_func=irr_labels.get, key="rv5_type")
@@ -2291,21 +2286,114 @@ def reverse_calc_panel(inputs: WindFarmFinancialInputs):
                     price = solve_turbine_price_for_target_irr(inputs, t_irr5, t_type5)
                     if price is not None:
                         st.success(f"Max turbine OEM price: **{price:,.1f} USD/kW** ({price * 7.1:,.0f} CNY/kW)")
-                        _rv_turbine_note(is_offshore, has_offshore_epc, has_onshore_detail)
+                        _rv_turbine_result_detail(is_offshore, has_offshore_epc, has_onshore_detail, inputs, price)
                     else:
                         st.error("Solve failed.")
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
 
-def _rv_turbine_note(is_offshore, has_offshore_epc, has_onshore_detail):
-    """Show a note about what was held constant"""
+def _rv_turbine_guide(is_offshore, has_offshore_epc, has_onshore_detail, inputs):
+    """Show onshore vs offshore workflow guidance for turbine price solver."""
+    inv = inputs.investment
     if has_offshore_epc:
-        st.caption("Held constant: tower, installation, foundation, BOP, all non-OEM EPC items")
+        oem = inv.offshore_detail.oem
+        epc_total = inv.offshore_detail.total_epc_per_kw
+        non_turbine = epc_total - oem.turbine_price_per_kw
+        st.info(
+            f"**Current mode: Offshore (EPC breakdown)**\n\n"
+            f"- EPC total: {epc_total:,.0f} USD/kW | Non-turbine: {non_turbine:,.0f} USD/kW\n"
+            f"- Solver holds constant: tower ({oem.tower_price_per_kw:,.0f}), "
+            f"installation, foundation, BOP, cable\n"
+            f"- Solver adjusts: **turbine OEM price only**\n\n"
+            f"Sidebar checklist: make sure tower, installation, foundation, BOP, cable "
+            f"costs in EPC breakdown are correctly filled."
+        )
     elif has_onshore_detail:
-        st.caption("Held constant: civil works, other costs, contingency, storage, grid connection")
+        on = inv.onshore_detail
+        non_equip = on.civil_works + on.construction_auxiliary + on.other_costs
+        contingency = (on.equipment_and_installation + on.civil_works + on.construction_auxiliary + on.other_costs) * on.contingency_rate
+        total_fixed = non_equip + contingency + on.storage_cost + on.grid_connection_cost
+        st.info(
+            f"**Current mode: Onshore (investment breakdown)**\n\n"
+            f"- Equipment & installation: {on.equipment_and_installation:,.0f} USD/kW "
+            f"(contains turbine + non-turbine equipment)\n"
+            f"- Fixed non-turbine: civil {on.civil_works:,.0f} + auxiliary {on.construction_auxiliary:,.0f} "
+            f"+ other {on.other_costs:,.0f} + contingency ~{contingency:,.0f} "
+            f"+ storage {on.storage_cost:,.0f} + grid {on.grid_connection_cost:,.0f} "
+            f"= **{total_fixed:,.0f} USD/kW**\n"
+            f"- Solver adjusts: **turbine portion within equipment**, "
+            f"keeps civil/auxiliary/other/storage/grid constant\n\n"
+            f"Sidebar checklist: make sure civil works, auxiliary, other costs, "
+            f"storage, grid connection are correctly filled."
+        )
     else:
-        st.caption("Held constant: BOP portion (estimated 40% of CAPEX)")
+        capex = inv.resolve_unit_investment()
+        bop_est = capex * 0.40
+        st.warning(
+            f"**Current mode: Quick (no cost breakdown)**\n\n"
+            f"- Total CAPEX: {capex:,.0f} USD/kW\n"
+            f"- BOP estimated: {bop_est:,.0f} USD/kW (40% of CAPEX, held constant)\n"
+            f"- Turbine estimated: {capex - bop_est:,.0f} USD/kW (60%, to be solved)\n\n"
+            f"**For more accurate results**, switch to **Detailed mode** "
+            f"in the sidebar and fill in the investment breakdown."
+        )
+
+    with st.expander("Onshore vs Offshore - what's different?", expanded=False):
+        st.markdown("""
+| | Offshore | Onshore | Quick (no breakdown) |
+|---|---|---|---|
+| **Cost structure** | EPC = OEM + tower + install + foundation + BOP + cable | Equipment & install + civil + auxiliary + other | Single CAPEX number |
+| **What solver adjusts** | OEM turbine price only | Turbine portion within equipment | 60% of CAPEX |
+| **What stays fixed** | Tower, install, foundation, BOP, cable, all other EPC items | Civil works, auxiliary, other costs, contingency, storage, grid | 40% of CAPEX (BOP estimate) |
+| **Sidebar preparation** | Fill EPC breakdown (tower, install, foundation, BOP, cable costs) | Fill investment breakdown (civil, auxiliary, other, storage, grid) | Just total CAPEX |
+| **Accuracy** | Highest (explicit cost split) | High (explicit non-turbine items) | Approximate (BOP is estimated) |
+| **Recommended for** | Offshore wind farms with EPC contracts | Onshore wind farms with feasibility study data | Quick screening / early stage |
+        """)
+
+
+def _rv_turbine_result_detail(is_offshore, has_offshore_epc, has_onshore_detail, inputs, price):
+    """Show detailed breakdown of how the solved turbine price fits into the cost structure."""
+    inv = inputs.investment
+    if has_offshore_epc:
+        oem = inv.offshore_detail.oem
+        old_epc = inv.offshore_detail.total_epc_per_kw
+        new_epc = old_epc - oem.turbine_price_per_kw + price
+        st.info(
+            f"**Cost breakdown with solved turbine price:**\n"
+            f"- Turbine OEM: **{price:,.0f}** USD/kW (solved)\n"
+            f"- Tower: {oem.tower_price_per_kw:,.0f} USD/kW (unchanged)\n"
+            f"- Non-OEM EPC: {old_epc - oem.turbine_price_per_kw - oem.tower_price_per_kw:,.0f} USD/kW (unchanged)\n"
+            f"- New total EPC: **{new_epc:,.0f}** USD/kW"
+        )
+    elif has_onshore_detail:
+        on = inv.onshore_detail
+        if on.turbine_price_per_kw > 0:
+            non_turbine_equip = on.non_turbine_equip_per_kw
+        else:
+            non_turbine_equip = on.equipment_and_installation * 0.30
+        new_equip = price + non_turbine_equip
+        non_equip = on.civil_works + on.construction_auxiliary + on.other_costs
+        new_total = new_equip + non_equip
+        new_total_with_cont = new_total * (1 + on.contingency_rate) + on.storage_cost + on.grid_connection_cost
+        st.info(
+            f"**Cost breakdown with solved turbine price:**\n"
+            f"- Turbine: **{price:,.0f}** USD/kW (solved)\n"
+            f"- Non-turbine equipment: {non_turbine_equip:,.0f} USD/kW (unchanged)\n"
+            f"- New equipment & install: **{new_equip:,.0f}** USD/kW\n"
+            f"- Civil + auxiliary + other: {non_equip:,.0f} USD/kW (unchanged)\n"
+            f"- Estimated new total: ~**{new_total_with_cont:,.0f}** USD/kW"
+        )
+    else:
+        capex = inv.resolve_unit_investment()
+        bop = capex * 0.40
+        new_capex = price + bop
+        st.info(
+            f"**Estimated breakdown:**\n"
+            f"- Turbine: **{price:,.0f}** USD/kW (solved)\n"
+            f"- BOP (estimated 40%): {bop:,.0f} USD/kW (unchanged)\n"
+            f"- Estimated new CAPEX: **{new_capex:,.0f}** USD/kW"
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════════
