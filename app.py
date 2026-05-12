@@ -2095,11 +2095,16 @@ def render_full_assessment(inputs: WindFarmFinancialInputs, result: CalculationR
     for f in result.annual_flows:
         df_data.append({
             "年份": f"建设-{f.year + 1}" if f.is_construction else f"运营-{f.year}",
-            "营业收入": f.revenue, "经营成本": f.total_opex,
+            "营业收入": f.revenue,
+            "补贴收入": f.subsidy_income,
+            "经营成本": f.total_opex,
             "折旧": f.depreciation,
             "利息支出": f.loan_interest + f.wc_loan_interest,
-            "总成本": f.total_cost, "利润总额": f.profit_before_tax,
-            "所得税": f.income_tax, "净利润": f.net_profit,
+            "总成本": f.total_cost,
+            "附加税+资源税": f.surcharge + f.resource_tax,
+            "利润总额": f.profit_before_tax,
+            "所得税": f.income_tax,
+            "净利润": f.net_profit,
             "全投资税后CF": f.project_net_cf_after_tax,
             "资本金CF": f.equity_net_cf,
         })
@@ -2297,14 +2302,18 @@ def _rv_turbine_guide(is_offshore, has_offshore_epc, has_onshore_detail, inputs)
     """Show onshore vs offshore workflow guidance for turbine price solver."""
     inv = inputs.investment
     if has_offshore_epc:
-        oem = inv.offshore_detail.oem
-        epc_total = inv.offshore_detail.total_epc_per_kw
+        detail = inv.offshore_detail
+        oem = detail.oem
+        epc_total = detail.total_epc_per_kw
         non_turbine = epc_total - oem.turbine_price_per_kw
+        tower_per_kw = detail.oem_per_kw - oem.turbine_price_per_kw
         st.info(
             f"**Current mode: Offshore (EPC breakdown)**\n\n"
             f"- EPC total: {epc_total:,.0f} USD/kW | Non-turbine: {non_turbine:,.0f} USD/kW\n"
-            f"- Solver holds constant: tower ({oem.tower_price_per_kw:,.0f}), "
-            f"installation, foundation, BOP, cable\n"
+            f"- Solver holds constant: tower (~{tower_per_kw:,.0f} USD/kW), "
+            f"installation ({detail.installation_per_kw:,.0f}), "
+            f"foundation ({detail.foundation_per_kw:,.0f}), "
+            f"BOP ({detail.bop.total_bop_per_kw:,.0f})\n"
             f"- Solver adjusts: **turbine OEM price only**\n\n"
             f"Sidebar checklist: make sure tower, installation, foundation, BOP, cable "
             f"costs in EPC breakdown are correctly filled."
@@ -2356,14 +2365,17 @@ def _rv_turbine_result_detail(is_offshore, has_offshore_epc, has_onshore_detail,
     """Show detailed breakdown of how the solved turbine price fits into the cost structure."""
     inv = inputs.investment
     if has_offshore_epc:
-        oem = inv.offshore_detail.oem
-        old_epc = inv.offshore_detail.total_epc_per_kw
+        detail = inv.offshore_detail
+        oem = detail.oem
+        old_epc = detail.total_epc_per_kw
         new_epc = old_epc - oem.turbine_price_per_kw + price
+        tower_per_kw = detail.oem_per_kw - oem.turbine_price_per_kw
+        non_oem_epc = old_epc - detail.oem_per_kw
         st.info(
             f"**Cost breakdown with solved turbine price:**\n"
             f"- Turbine OEM: **{price:,.0f}** USD/kW (solved)\n"
-            f"- Tower: {oem.tower_price_per_kw:,.0f} USD/kW (unchanged)\n"
-            f"- Non-OEM EPC: {old_epc - oem.turbine_price_per_kw - oem.tower_price_per_kw:,.0f} USD/kW (unchanged)\n"
+            f"- Tower: ~{tower_per_kw:,.0f} USD/kW (unchanged)\n"
+            f"- Install+Foundation+BOP: {non_oem_epc:,.0f} USD/kW (unchanged)\n"
             f"- New total EPC: **{new_epc:,.0f}** USD/kW"
         )
     elif has_onshore_detail:
