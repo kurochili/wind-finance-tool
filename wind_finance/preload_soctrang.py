@@ -58,7 +58,7 @@ def _build_inputs(static_per_kw: float, hours: float, tariff: float) -> WindFarm
         working_capital_equity_ratio=0.70,
     )
     warranty = WarrantyPeriodCost(
-        warranty_years=5,
+        warranty_years=0,
         material_cost_per_kw=0.63,
         repair_cost_per_kw=0.74,
         other_cost_per_kw=3.45,
@@ -68,9 +68,8 @@ def _build_inputs(static_per_kw: float, hours: float, tariff: float) -> WindFarm
         material_cost_per_kw=1.27,
         other_cost_per_kw=3.45,
         maintenance_rates=[
-            (6, 10, 0.010),
-            (11, 15, 0.015),
-            (16, 20, 0.020),
+            (1, 5, 0.005), (6, 10, 0.010),
+            (11, 15, 0.015), (16, 20, 0.020),
         ],
     )
     operational = OperationalCost(
