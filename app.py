@@ -135,8 +135,10 @@ COLOR_PALETTE = [
 # Supabase 初始化
 # ════════════════════════════════════════════════════════════════════════════
 
-_sb_url = _get_secret("SUPABASE_URL")
-_sb_key = _get_secret("SUPABASE_KEY")
+_sb_url = _get_secret("SUPABASE_URL",
+                       "https://vqahmhvxnjrxduwbxfzj.supabase.co")
+_sb_key = _get_secret("SUPABASE_KEY",
+                       "sb_publishable_dwrsDYm2eMjkZZP-hq9D_Q__OfPfHe3")
 if _sb_url and _sb_key:
     _db.init(_sb_url, _sb_key)
 _USE_DB = _db.db_available()
@@ -3173,12 +3175,14 @@ def main():
         '<path d="M145,168 Q170,155 165,135 Q162,125 155,130" fill="none" stroke="#1a1a1a" stroke-width="10" stroke-linecap="round"/>'
         '</svg>'
     )
+    _db_icon = "🟢" if _USE_DB else "⚪"
+    _db_label = "Cloud DB" if _USE_DB else "Local Only"
     st.sidebar.markdown(
         "<div style='display:flex;align-items:center;gap:10px;padding:4px 0'>"
         f"<div style='width:56px;min-width:56px'>{_cat_svg_inline}</div>"
         "<div style='color:#888;line-height:1.4;font-size:0.9rem'>"
         "<b>MingYang Wind Tool</b><br>"
-        "Built by kurochilli</div>"
+        f"Built by kurochilli &nbsp;{_db_icon} {_db_label}</div>"
         "</div>",
         unsafe_allow_html=True,
     )
