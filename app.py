@@ -26,6 +26,7 @@ from wind_finance.country_profiles import (
     CountryOMDefaults,
     MarketBenchmark,
     get_country_profile,
+    get_diag_thresholds,
     list_countries,
     _PROFILES,
 )
@@ -2980,8 +2981,13 @@ def _irr_color(v: float) -> str:
 
 
 def _diagnose_project(inp: WindFarmFinancialInputs, res: CalculationResult) -> list[tuple[str, str, str]]:
-    """Return list of (icon, message, severity) for result health check."""
+    """Return list of (icon, message, severity) for result health check.
+    Thresholds are country-specific, based on local policy/benchmark data."""
     diags: list[tuple[str, str, str]] = []
+    country = inp.basic.country
+    ptype = inp.basic.project_type
+    th = get_diag_thresholds(country)
+
     irr = res.project_irr_after_tax
     eq = res.equity_irr
     lcoe = res.lcoe
@@ -2989,36 +2995,81 @@ def _diagnose_project(inp: WindFarmFinancialInputs, res: CalculationResult) -> l
     npv = res.project_npv_after_tax
     payback = res.payback_after_tax
     capex = inp.investment.resolve_unit_investment()
+    p90 = inp.basic.full_load_hours
+    disc = inp.tax_financial.discount_rate
+    roe = res.roe if hasattr(res, "roe") else None
 
+    _cn = th.country_cn
+
+    # ── IRR (project after-tax) ──
     if irr < 0:
-        diags.append(("🔴", "全投IRR为负值，项目亏损", "error"))
-    elif irr < 0.04:
-        diags.append(("🟠", f"全投IRR仅{irr:.2%}，低于一般基准(6-8%)", "warning"))
+        diags.append(("🔴", f"全投IRR为负({irr:.2%})，项目亏损", "error"))
+    elif irr < th.irr_floor:
+        diags.append(("🔴", f"全投IRR仅{irr:.2%}，远低于{_cn}基准({th.irr_low:.0%})", "error"))
+    elif irr < th.irr_low:
+        _note = f" ({th.irr_note})" if th.irr_note else ""
+        diags.append(("🟠", f"全投IRR {irr:.2%}，低于{_cn}行业基准{th.irr_low:.0%}{_note}", "warning"))
+    elif irr > th.irr_high:
+        diags.append(("🟡", f"全投IRR {irr:.2%}，高于{_cn}正常区间({th.irr_high:.0%}) — 核查CAPEX/P90", "warning"))
 
-    if irr > 0.20:
-        diags.append(("🟡", f"全投IRR达{irr:.2%}，偏高 — 建议核查CAPEX和P90", "warning"))
-
+    # ── Equity IRR ──
     if eq < 0:
         diags.append(("🔴", f"资本金IRR为负({eq:.2%})，融资结构亏损", "error"))
-    elif eq > 0.35:
-        diags.append(("🟡", f"资本金IRR达{eq:.2%}，异常高 — 建议核查贷款利率/资本金比例", "warning"))
+    elif eq < th.eq_irr_floor:
+        diags.append(("🔴", f"资本金IRR {eq:.2%}，远低于{_cn}基准", "error"))
+    elif eq < th.eq_irr_low:
+        _note = f" ({th.eq_irr_note})" if th.eq_irr_note else ""
+        diags.append(("🟠", f"资本金IRR {eq:.2%}，低于{_cn}基准{th.eq_irr_low:.0%}{_note}", "warning"))
+    elif eq > th.eq_irr_high:
+        _note = f" ({th.eq_irr_note})" if th.eq_irr_note else ""
+        diags.append(("🟡", f"资本金IRR {eq:.2%}，高于{_cn}正常上限{th.eq_irr_high:.0%}{_note}", "warning"))
 
-    if eq < irr and eq > 0:
-        diags.append(("⚠️", "资本金IRR < 全投IRR，杠杆效应为负 — 贷款利率可能高于项目回报", "info"))
+    if 0 < eq < irr:
+        diags.append(("⚠️", "资本金IRR < 全投IRR — 贷款利率高于项目收益，杠杆效应为负", "info"))
 
+    # ── LCOE ──
+    lcoe_limit = th.lcoe_high_offshore if ptype == "offshore" else th.lcoe_high_onshore
     if lcoe > tariff > 0:
         diags.append(("🔴", f"LCOE({lcoe:.4f}) > 电价({tariff:.4f})，度电亏损", "error"))
+    elif lcoe > lcoe_limit:
+        diags.append(("🟠", f"LCOE {lcoe:.4f} 高于{_cn}{ptype}参考上限({lcoe_limit:.3f})", "warning"))
 
+    # ── Tariff vs country range ──
+    _tr = th.tariff_offshore if ptype == "offshore" else th.tariff_onshore
+    if _tr[1] > 0:
+        if tariff > _tr[1] * 1.3:
+            diags.append(("🟡", f"电价{tariff:.4f}高于{_cn}政策区间({_tr[0]:.3f}-{_tr[1]:.3f}) — 确认电价来源", "warning"))
+        elif tariff < _tr[0] * 0.7 and _tr[0] > 0:
+            diags.append(("🟠", f"电价{tariff:.4f}低于{_cn}政策区间({_tr[0]:.3f}-{_tr[1]:.3f})", "warning"))
+
+    # ── CAPEX ──
+    capex_limit = th.capex_high_offshore if ptype == "offshore" else th.capex_high_onshore
+    if capex > capex_limit * 1.3:
+        diags.append(("🟡", f"CAPEX {capex:,.0f}$/kW 远超{_cn}{ptype}参考上限({capex_limit:,.0f}) — 核查EPC明细", "warning"))
+    elif capex > capex_limit:
+        diags.append(("🟠", f"CAPEX {capex:,.0f}$/kW 高于{_cn}{ptype}参考({capex_limit:,.0f})", "info"))
+
+    # ── NPV ──
     if npv < 0:
-        diags.append(("🟠", f"NPV为负({npv/1e6:,.1f}M$) — 折现率({inp.tax_financial.discount_rate:.0%})高于IRR", "info"))
+        if irr > 0 and irr < disc:
+            diags.append(("ℹ️", f"NPV {npv/1e6:,.1f}M$ (折现率{disc:.0%} > IRR{irr:.2%}，属正常)", "info"))
+        else:
+            diags.append(("🟠", f"NPV为负({npv/1e6:,.1f}M$)", "warning"))
 
-    if payback > 20:
-        diags.append(("🔴", f"回收期{payback:.1f}年，超过运营期 — 检查电价/投资", "error"))
-    elif payback > 15:
+    # ── Payback ──
+    op_years = inp.operational.operation_years
+    if payback > op_years:
+        diags.append(("🔴", f"回收期{payback:.1f}年 > 运营期{op_years}年", "error"))
+    elif payback > th.payback_critical:
         diags.append(("🟠", f"回收期{payback:.1f}年，偏长", "warning"))
+    elif payback > th.payback_warning:
+        diags.append(("ℹ️", f"回收期{payback:.1f}年", "info"))
 
-    if capex > 2500:
-        diags.append(("🟡", f"单位投资{capex:,.0f}$/kW偏高 — 核查EPC/BOP明细", "warning"))
+    # ── P90 sanity ──
+    if p90 > 4500:
+        diags.append(("🟡", f"P90 {p90:.0f}h 异常高 — 核查风资源数据", "warning"))
+    elif p90 < 1200 and ptype == "onshore":
+        diags.append(("🟠", f"P90 {p90:.0f}h 偏低(陆上一般1800-3000h)", "warning"))
 
     return diags
 
