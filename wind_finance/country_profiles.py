@@ -1359,3 +1359,183 @@ def get_country_profile(country: str) -> Optional[CountryProfile]:
 def list_countries() -> list[tuple[str, str]]:
     """列出所有支持的国家（英文名, 中文名）"""
     return [(p.country_name, p.country_name_cn) for p in _PROFILES.values()]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 分国家健康度诊断基准
+# ════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class CountryDiagThresholds:
+    """Country-specific diagnostic thresholds for project health check."""
+    country: str
+    country_cn: str
+
+    # IRR (project after-tax)
+    irr_floor: float          # below this = red
+    irr_low: float            # below this = orange
+    irr_high: float           # above this = yellow (suspiciously high)
+    irr_note: str = ""
+
+    # Equity IRR
+    eq_irr_floor: float = 0.0
+    eq_irr_low: float = 0.06
+    eq_irr_high: float = 0.30
+    eq_irr_note: str = ""
+
+    # LCOE (USD/kWh)
+    lcoe_high_onshore: float = 0.06
+    lcoe_high_offshore: float = 0.10
+
+    # CAPEX (USD/kW)
+    capex_high_onshore: float = 1200.0
+    capex_high_offshore: float = 3000.0
+
+    # Payback (years)
+    payback_warning: float = 15.0
+    payback_critical: float = 20.0
+
+    # Tariff reference ranges (pulled from CountryProfile)
+    tariff_onshore: Tuple[float, float] = (0.0, 0.0)
+    tariff_offshore: Tuple[float, float] = (0.0, 0.0)
+
+    # Policy source
+    policy_source: str = ""
+    data_year: int = 2025
+
+
+def _build_diag_thresholds(p: CountryProfile) -> CountryDiagThresholds:
+    """Derive diagnostic thresholds from a CountryProfile + its benchmarks."""
+    irr_lo_vals = [b.value_low / 100 for b in p.benchmarks if "IRR" in b.metric and b.project_type in ("onshore", "all")]
+    irr_hi_vals = [b.value_high / 100 for b in p.benchmarks if "IRR" in b.metric]
+    eq_lo_vals = [b.value_low / 100 for b in p.benchmarks if b.metric == "Equity IRR"]
+    eq_hi_vals = [b.value_high / 100 for b in p.benchmarks if b.metric == "Equity IRR"]
+
+    irr_floor = min(irr_lo_vals) * 0.5 if irr_lo_vals else 0.02
+    irr_low = min(irr_lo_vals) if irr_lo_vals else 0.05
+    irr_high = max(irr_hi_vals) * 1.8 if irr_hi_vals else 0.20
+    eq_floor = min(eq_lo_vals) * 0.5 if eq_lo_vals else 0.02
+    eq_low = min(eq_lo_vals) if eq_lo_vals else 0.06
+    eq_high = max(eq_hi_vals) * 2.0 if eq_hi_vals else 0.30
+
+    sources = list(set(b.source for b in p.benchmarks[:3]))
+
+    return CountryDiagThresholds(
+        country=p.country_name,
+        country_cn=p.country_name_cn,
+        irr_floor=irr_floor, irr_low=irr_low, irr_high=irr_high,
+        irr_note=f"Based on {', '.join(sources[:2])}" if sources else "",
+        eq_irr_floor=eq_floor, eq_irr_low=eq_low, eq_irr_high=eq_high,
+        tariff_onshore=p.onshore_tariff_range,
+        tariff_offshore=p.offshore_tariff_range,
+        policy_source=p.tariff_mechanism,
+        data_year=int(p.data_updated.split("-")[0]) if p.data_updated else 2025,
+    )
+
+
+# Pre-built defaults per country, with manual overrides for key markets
+_DIAG_OVERRIDES: Dict[str, dict] = {
+    "china": dict(
+        irr_floor=0.03, irr_low=0.06, irr_high=0.18,
+        eq_irr_floor=0.04, eq_irr_low=0.08, eq_irr_high=0.25,
+        lcoe_high_onshore=0.05, lcoe_high_offshore=0.07,
+        capex_high_onshore=900, capex_high_offshore=2500,
+        irr_note="NDRC基准收益率8%; 平价上网后项目IRR普遍6-10%",
+        eq_irr_note="NDRC资本金IRR基准8%, 优质项目10-13%",
+    ),
+    "vietnam": dict(
+        irr_floor=0.03, irr_low=0.05, irr_high=0.16,
+        eq_irr_floor=0.03, eq_irr_low=0.06, eq_irr_high=0.20,
+        lcoe_high_onshore=0.07, lcoe_high_offshore=0.09,
+        capex_high_onshore=1200, capex_high_offshore=2000,
+        irr_note="Decision 39 FIT下项目IRR 6-8%; Decision 1508过渡期IRR偏低",
+        eq_irr_note="越南市场贷款利率高(5.5-8%), 杠杆效应有限",
+    ),
+    "philippines": dict(
+        irr_floor=0.04, irr_low=0.08, irr_high=0.22,
+        eq_irr_floor=0.05, eq_irr_low=0.10, eq_irr_high=0.35,
+        lcoe_high_onshore=0.08, lcoe_high_offshore=0.12,
+        capex_high_onshore=1300, capex_high_offshore=3500,
+        irr_note="RE法案税收优惠大幅提高IRR; GESP FIT率$0.098/kWh偏高",
+        eq_irr_note="7年免税+低资本金→资本金IRR可达15-25%属正常",
+    ),
+    "australia": dict(
+        irr_floor=0.04, irr_low=0.07, irr_high=0.20,
+        eq_irr_floor=0.05, eq_irr_low=0.08, eq_irr_high=0.28,
+        lcoe_high_onshore=0.07, lcoe_high_offshore=0.12,
+        capex_high_onshore=1100, capex_high_offshore=3500,
+        irr_note="PPA竞拍价格$50-90/MWh; LGC绿证贡献额外收入",
+        eq_irr_note="澳洲30%企业税率但加速折旧, 实际税负低",
+    ),
+    "japan": dict(
+        irr_floor=0.03, irr_low=0.05, irr_high=0.14,
+        eq_irr_floor=0.04, eq_irr_low=0.06, eq_irr_high=0.18,
+        lcoe_high_onshore=0.12, lcoe_high_offshore=0.20,
+        capex_high_onshore=2000, capex_high_offshore=5000,
+        irr_note="日本FIT制度支撑; 海上风电FIP制度下IRR 6-8%",
+        eq_irr_note="日本低利率环境, 杠杆效应明显",
+    ),
+    "south korea": dict(
+        irr_floor=0.03, irr_low=0.06, irr_high=0.16,
+        eq_irr_floor=0.04, eq_irr_low=0.07, eq_irr_high=0.22,
+        lcoe_high_onshore=0.10, lcoe_high_offshore=0.15,
+        capex_high_onshore=1500, capex_high_offshore=4000,
+        irr_note="RPS+REC制度; 海上风电SMP+REC 3.5倍",
+        eq_irr_note="韩国贷款利率3-5%, 杠杆效应中等",
+    ),
+    "taiwan": dict(
+        irr_floor=0.03, irr_low=0.06, irr_high=0.16,
+        eq_irr_floor=0.04, eq_irr_low=0.07, eq_irr_high=0.20,
+        lcoe_high_onshore=0.08, lcoe_high_offshore=0.14,
+        capex_high_onshore=1400, capex_high_offshore=4000,
+        irr_note="FIT制度TWD 4.5/kWh (20年); 第三阶段竞价",
+        eq_irr_note="台湾项目融资成熟, 资本金IRR 8-12%",
+    ),
+    "thailand": dict(
+        irr_floor=0.03, irr_low=0.06, irr_high=0.18,
+        eq_irr_floor=0.04, eq_irr_low=0.08, eq_irr_high=0.25,
+        lcoe_high_onshore=0.07, lcoe_high_offshore=0.10,
+        capex_high_onshore=1200, capex_high_offshore=3000,
+    ),
+    "indonesia": dict(
+        irr_floor=0.04, irr_low=0.08, irr_high=0.20,
+        eq_irr_floor=0.05, eq_irr_low=0.10, eq_irr_high=0.28,
+        lcoe_high_onshore=0.08, lcoe_high_offshore=0.12,
+        capex_high_onshore=1300, capex_high_offshore=3000,
+        irr_note="MEMR 5/2025 PPA框架; PLN购电价偏低",
+    ),
+    "malaysia": dict(
+        irr_floor=0.03, irr_low=0.06, irr_high=0.18,
+        eq_irr_floor=0.04, eq_irr_low=0.08, eq_irr_high=0.25,
+        lcoe_high_onshore=0.07, lcoe_high_offshore=0.10,
+        capex_high_onshore=1200, capex_high_offshore=3000,
+    ),
+    "cambodia": dict(
+        irr_floor=0.04, irr_low=0.08, irr_high=0.22,
+        eq_irr_floor=0.05, eq_irr_low=0.10, eq_irr_high=0.30,
+        lcoe_high_onshore=0.08, lcoe_high_offshore=0.12,
+        capex_high_onshore=1300, capex_high_offshore=3000,
+        irr_note="QIP优惠9年免税; 电力市场尚未成熟",
+    ),
+}
+
+
+def get_diag_thresholds(country: str) -> CountryDiagThresholds:
+    """Get country-specific diagnostic thresholds. Falls back to generic defaults."""
+    key = country.lower().strip()
+    profile = _PROFILES.get(key)
+
+    if profile:
+        base = _build_diag_thresholds(profile)
+    else:
+        base = CountryDiagThresholds(
+            country=country, country_cn=country,
+            irr_floor=0.02, irr_low=0.05, irr_high=0.20,
+        )
+
+    overrides = _DIAG_OVERRIDES.get(key, {})
+    for field_name, value in overrides.items():
+        if hasattr(base, field_name):
+            setattr(base, field_name, value)
+
+    return base
