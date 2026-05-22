@@ -149,6 +149,8 @@ _USE_DB = _db.db_available()
 
 def _preload_defaults() -> Dict[str, dict]:
     """从内置脚本加载预置项目。"""
+    import importlib, logging
+    _log = logging.getLogger("preload")
     projects: Dict[str, dict] = {}
     _preloaders = [
         "wind_finance.preload_philippines",
@@ -160,9 +162,13 @@ def _preload_defaults() -> Dict[str, dict]:
     ]
     for _mod_name in _preloaders:
         try:
-            import importlib
             _mod = importlib.import_module(_mod_name)
-            for entry in _mod.get_all_projects():
+            entries = _mod.get_all_projects()
+        except Exception as e:
+            _log.warning("Failed to import %s: %s", _mod_name, e)
+            continue
+        for entry in entries:
+            try:
                 name, group, country, inputs, result = entry
                 pid = str(uuid.uuid4())[:8]
                 projects[pid] = {
@@ -173,8 +179,9 @@ def _preload_defaults() -> Dict[str, dict]:
                     "result": copy.deepcopy(result),
                     "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
-        except Exception:
-            pass
+            except Exception as e:
+                _log.warning("Failed to load project from %s: %s", _mod_name, e)
+    _log.info("Preloaded %d projects from %d modules", len(projects), len(_preloaders))
     return projects
 
 
@@ -3010,15 +3017,30 @@ def _render_project_list():
 
     total_variants = len(projects)
     total_groups = sum(len(g) for g in tree.values())
-    st.markdown(
-        f'<div class="pm-summary">'
-        f'<span><b>{total_variants}</b> variants</span>'
-        f'<span><b>{len(tree)}</b> countries</span>'
-        f'<span><b>{total_groups}</b> project groups</span></div>',
-        unsafe_allow_html=True,
-    )
 
-    for country in sorted(tree.keys()):
+    # ── 筛选栏 ──
+    _fc1, _fc2, _fc3 = st.columns([2, 4, 2])
+    with _fc1:
+        all_countries = ["全部"] + sorted(tree.keys())
+        _sel_country = st.selectbox(
+            "筛选国家", all_countries, index=0, key="pm_country_filter")
+    with _fc2:
+        _search = st.text_input(
+            "搜索项目名称", value="", placeholder="输入关键词快速定位...",
+            key="pm_search")
+    with _fc3:
+        st.markdown(
+            f'<div class="pm-summary" style="margin-top:24px">'
+            f'<span><b>{total_variants}</b> variants</span>'
+            f'<span><b>{len(tree)}</b> countries</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    filtered_countries = sorted(tree.keys())
+    if _sel_country != "全部":
+        filtered_countries = [c for c in filtered_countries if c == _sel_country]
+
+    for country in filtered_countries:
         groups = tree[country]
         country_count = sum(len(v) for v in groups.values())
         st.markdown(
@@ -3031,6 +3053,11 @@ def _render_project_list():
 
         for group_name in sorted(groups.keys()):
             items = groups[group_name]
+            if _search:
+                items = [(pid, p) for pid, p in items
+                         if _search.lower() in p["name"].lower()]
+                if not items:
+                    continue
             items.sort(key=lambda x: x[1]["name"])
 
             ptype = items[0][1]["inputs"].basic.project_type
