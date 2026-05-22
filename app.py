@@ -1187,20 +1187,60 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
             pw_major = st.checkbox("含大部件更换", value=True, key="pw_major")
             pw_material = st.number_input("材料费 (USD/kW·年)", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="pwm")
             pw_other = st.number_input("其他费用 (USD/kW·年)", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="pwo")
-            st.markdown("**维修费率 (基于静态投资)**")
-            rate_6_10 = st.number_input("6-10年 (%)", 0.0, 5.0, 1.0, step=0.1, key="mr1") / 100.0
-            rate_11_15 = st.number_input("11-15年 (%)", 0.0, 5.0, 1.5, step=0.1, key="mr2") / 100.0
-            rate_16_20 = st.number_input("16-20年 (%)", 0.0, 5.0, 2.0, step=0.1, key="mr3") / 100.0
-            rate_21_25 = st.number_input("21-25年 (%)", 0.0, 5.0, 2.5, step=0.1, key="mr4") / 100.0
-            maint_rates = [
-                (1, 5, 0.005),
-                (6, 10, rate_6_10),
-                (11, 15, rate_11_15),
-                (16, 20, rate_16_20),
-                (21, 25, rate_21_25),
-            ]
+
+            st.markdown("**逐年维护费率（可逐行编辑）**")
+            st.caption("日常维护 + 大部件替换均以静态投资为基数（%/年），总额 = 两者之和 × 静态总投资")
+
+            # 构建默认逐年费率表（与同事系统一致）
+            _stage_defs = [(1,5,0.5), (6,10,1.0), (11,15,1.5), (16,20,2.0), (21,25,2.5)]
+            _total_cap_musd = unit_investment * num_turbines * turbine_mw * 1000  # USD
+            if "om_yr_table" not in st.session_state or st.session_state.get("om_yr_table_op_years") != operation_years:
+                _rows = []
+                for _yr in range(1, operation_years + 1):
+                    _daily = 0.5
+                    for _s, _e, _r in _stage_defs:
+                        if _s <= _yr <= _e:
+                            _daily = _r
+                            break
+                    _rows.append({"年份": _yr, "日常维护(%)": _daily, "大部件替换(%)": 0.0})
+                st.session_state["om_yr_table"] = pd.DataFrame(_rows)
+                st.session_state["om_yr_table_op_years"] = operation_years
+
+            _om_edited = st.data_editor(
+                st.session_state["om_yr_table"],
+                key="om_yr_editor",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "年份": st.column_config.NumberColumn("年", disabled=True, width="small"),
+                    "日常维护(%)": st.column_config.NumberColumn("日常(%)", min_value=0.0, max_value=10.0, step=0.1, format="%.2f", width="small"),
+                    "大部件替换(%)": st.column_config.NumberColumn("大部件(%)", min_value=0.0, max_value=10.0, step=0.1, format="%.2f", width="small"),
+                },
+                num_rows="fixed",
+            )
+            # 同步回 session_state
+            st.session_state["om_yr_table"] = _om_edited
+
+            # 计算逐年总额预览（万USD，参考用）
+            _preview_rows = []
+            for _, _r in _om_edited.iterrows():
+                _total_rate = (_r["日常维护(%)"] + _r["大部件替换(%)"]) / 100.0
+                _annual_cost = _total_cap_musd * _total_rate / 10000  # 万USD
+                _preview_rows.append(f"Y{int(_r['年份'])}: {_r['日常维护(%)']:.2f}%+{_r['大部件替换(%)']:.2f}% = {_annual_cost:,.1f} 万USD")
+
+            with st.expander("📊 逐年费用预览", expanded=False):
+                for _line in _preview_rows:
+                    st.caption(_line)
+
+            # 转换为 maintenance_rates（每年独立一个区间）
+            maint_rates = []
+            for _, _r in _om_edited.iterrows():
+                _yr = int(_r["年份"])
+                _total_rate = (_r["日常维护(%)"] + _r["大部件替换(%)"]) / 100.0
+                maint_rates.append((_yr, _yr, _total_rate))
+
             if _sens_help:
-                st.caption("⚡ **高敏感** | 维修费率是运维成本最大变量。1%→2%费率变化可导致IRR波动0.3~0.8pp。注意：基数是全部静态投资，海上项目含海缆/升压站等非机电设备，可能偏高。")
+                st.caption("⚡ **高敏感** | 维修费率是运维成本最大变量。1%→2%费率变化可导致IRR波动0.3~0.8pp。")
                 st.warning("⚠️ 此方法适用于中国国内项目。海外项目建议切换为'固定单价法'或'合同报价法'。")
         post_warranty_cost = PostWarrantyPeriodCost(
             includes_major_components=pw_major,
