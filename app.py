@@ -527,8 +527,17 @@ def smart_upload_panel():
     else:
         tax_holiday = (1, 3, 0.0, 4, 6, cit / 2.0)
 
-    # ── Step 1: 构建可编辑表格 ──
+    # ── 项目分组前缀 ──
     st.markdown("---")
+    su_project_prefix = st.text_input(
+        "📁 项目组名（Group）",
+        value="",
+        placeholder="如：Ha Tinh、Laguna、Frontera — 留空则归入 Smart 组",
+        key="su_project_prefix",
+        help="保存后所有方案将以「[组名] - [机型]」命名，自动归入同一个项目组。",
+    )
+
+    # ── Step 1: 构建可编辑表格 ──
     st.markdown("### 📊 参数确认 — 请核对并修改")
     st.caption("识别结果已填入下表，您可以**直接编辑**每个单元格。标红项为必须修正的错误，橙色为风险提示。")
 
@@ -618,8 +627,10 @@ def smart_upload_panel():
             bop = float(row["BOP($/kW)"]) if pd.notna(row["BOP($/kW)"]) else 0
             capex = float(row["CAPEX($/kW)"]) if pd.notna(row["CAPEX($/kW)"]) and row["CAPEX($/kW)"] > 0 else (tsi + bop)
 
+            _prefix = st.session_state.get("su_project_prefix", "").strip() or "Smart"
+            _proj_name = f"{_prefix} - {wtg}"
             basic = BasicInfo(
-                project_name=f"Smart - {wtg}", project_type="offshore" if is_offshore else "onshore",
+                project_name=_proj_name, project_type="offshore" if is_offshore else "onshore",
                 country=country_name, num_turbines=units, turbine_capacity_mw=mw,
                 full_load_hours=p90, loss_rate=0.0, construction_months=build_months,
             )
@@ -655,7 +666,7 @@ def smart_upload_panel():
             res = calculate(inp)
             all_results.append((wtg, row, inp, res))
 
-            save_project(f"Smart - {wtg}", inp, res)
+            save_project(_proj_name, inp, res, group=_prefix)
 
         st.success(f"已计算并保存 {len(all_results)} 个方案！")
 
@@ -2960,7 +2971,7 @@ def _render_project_card(pid: str, proj: dict, best_irr: bool, best_lcoe: bool):
         r1.metric("Payback", f"{res.payback_after_tax:.1f} yr")
         r2.metric("IRR (before tax)", f"{res.project_irr_before_tax:.2%}")
 
-        # 操作按钮
+        # 操作按钮行
         b1, b2, b3, _pad = st.columns([1, 1, 1, 3])
         with b1:
             if st.button("View Details", key=f"view_{pid}", type="primary", use_container_width=True):
@@ -2977,28 +2988,31 @@ def _render_project_card(pid: str, proj: dict, best_irr: bool, best_lcoe: bool):
         with b3:
             confirming = st.session_state.get("confirm_delete") == pid
             if confirming:
-                st.warning(f"Delete **{proj['name']}**? Enter credentials:")
-                del_u = st.text_input("Username", key=f"delu_{pid}",
-                                      placeholder="Username")
-                del_p = st.text_input("Password", key=f"delp_{pid}",
-                                      type="password", placeholder="Password")
-                c_yes, c_no = st.columns(2)
-                with c_yes:
-                    if st.button("Confirm", key=f"cdel_y_{pid}",
-                                 type="primary", use_container_width=True):
-                        if del_u == _DELETE_USER and del_p == _DELETE_PWD:
-                            delete_project(pid)
-                            st.rerun()
-                        else:
-                            st.error("Wrong credentials")
-                with c_no:
-                    if st.button("Cancel", key=f"cdel_n_{pid}",
-                                 use_container_width=True):
-                        st.session_state.pop("confirm_delete", None)
-                        st.rerun()
+                if st.button("✕ Cancel", key=f"cdel_n_{pid}", use_container_width=True):
+                    st.session_state.pop("confirm_delete", None)
+                    st.rerun()
             else:
-                if st.button("Delete", key=f"del_{pid}", use_container_width=True):
+                if st.button("🗑 Delete", key=f"del_{pid}", use_container_width=True):
                     st.session_state["confirm_delete"] = pid
+                    st.rerun()
+
+        # 删除确认区 — 全宽展示，避免挤压导致文字竖排
+        if st.session_state.get("confirm_delete") == pid:
+            st.warning(f"⚠️ 确认删除 **{proj['name']}**？此操作不可撤销，请输入管理员凭证：")
+            _dc1, _dc2 = st.columns(2)
+            del_u = _dc1.text_input("用户名", key=f"delu_{pid}", placeholder="Username")
+            del_p = _dc2.text_input("密码", key=f"delp_{pid}", type="password", placeholder="Password")
+            _db1, _db2, _pad2 = st.columns([1, 1, 4])
+            with _db1:
+                if st.button("✅ 确认删除", key=f"cdel_y_{pid}", type="primary", use_container_width=True):
+                    if del_u == _DELETE_USER and del_p == _DELETE_PWD:
+                        delete_project(pid)
+                        st.rerun()
+                    else:
+                        st.error("用户名或密码错误")
+            with _db2:
+                if st.button("取消", key=f"cdel_n2_{pid}", use_container_width=True):
+                    st.session_state.pop("confirm_delete", None)
                     st.rerun()
 
 
@@ -3067,14 +3081,94 @@ def _render_project_list():
             best_irr_pid = max(items, key=lambda x: x[1]["result"].project_irr_after_tax)[0]
             best_lcoe_pid = min(items, key=lambda x: x[1]["result"].lcoe)[0]
 
-            st.markdown(
-                f'<div class="pm-group-bar">'
-                f'<span class="pm-gname">{group_name}</span>'
-                f'<span class="pm-tag {tag_cls}">{type_label}</span>'
-                f'<span class="pm-tag pm-tag-count">{len(items)} variants</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+            _gkey = f"{country}__{group_name}"
+            _rename_key = f"renaming_group_{_gkey}"
+            _delgrp_key = f"delgroup_{_gkey}"
+
+            # Group bar + 管理按钮
+            _gb_col, _gr_col, _gd_col = st.columns([7, 1, 1])
+            with _gb_col:
+                st.markdown(
+                    f'<div class="pm-group-bar" style="margin-top:8px">'
+                    f'<span class="pm-gname">{group_name}</span>'
+                    f'<span class="pm-tag {tag_cls}">{type_label}</span>'
+                    f'<span class="pm-tag pm-tag-count">{len(items)} variants</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            with _gr_col:
+                st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
+                if st.button("✏️ 重命名", key=f"grename_{_gkey}", use_container_width=True):
+                    st.session_state[_rename_key] = True
+                    st.session_state.pop(_delgrp_key, None)
+                    st.rerun()
+            with _gd_col:
+                st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
+                if st.button("🗑 删除组", key=f"gdelete_{_gkey}", use_container_width=True):
+                    st.session_state[_delgrp_key] = True
+                    st.session_state.pop(_rename_key, None)
+                    st.rerun()
+
+            # ── 重命名表单 ──
+            if st.session_state.get(_rename_key):
+                with st.container(border=True):
+                    st.markdown(f"**重命名项目组：{group_name}**（所有方案的 group 和名称前缀同步更新）")
+                    _rn1, _rn2 = st.columns(2)
+                    _new_gname = _rn1.text_input("新组名", value=group_name, key=f"new_gname_{_gkey}")
+                    _rn2.markdown("")
+                    _ra1, _ra2 = st.columns(2)
+                    _gadm_u = _ra1.text_input("管理员用户名", key=f"gadmu_{_gkey}", placeholder="Username")
+                    _gadm_p = _ra2.text_input("管理员密码", key=f"gadmp_{_gkey}", type="password", placeholder="Password")
+                    _rb1, _rb2, _rbpad = st.columns([1, 1, 4])
+                    with _rb1:
+                        if st.button("✅ 确认重命名", key=f"grn_ok_{_gkey}", type="primary", use_container_width=True):
+                            if _gadm_u == _DELETE_USER and _gadm_p == _DELETE_PWD:
+                                _new = _new_gname.strip()
+                                if _new and _new != group_name:
+                                    for _pid, _proj in items:
+                                        _proj["group"] = _new
+                                        if _proj["name"].startswith(f"{group_name} - "):
+                                            _proj["name"] = _new + _proj["name"][len(group_name):]
+                                            _proj["inputs"].basic.project_name = _proj["name"]
+                                        if _USE_DB:
+                                            try:
+                                                _db.db_save(
+                                                    _pid, _proj["name"], _new,
+                                                    _proj.get("country", ""), _proj["inputs"],
+                                                    _proj.get("saved_at", ""),
+                                                )
+                                            except Exception:
+                                                pass
+                                st.session_state.pop(_rename_key, None)
+                                st.rerun()
+                            else:
+                                st.error("用户名或密码错误")
+                    with _rb2:
+                        if st.button("取消", key=f"grn_no_{_gkey}", use_container_width=True):
+                            st.session_state.pop(_rename_key, None)
+                            st.rerun()
+
+            # ── 删除整组表单 ──
+            if st.session_state.get(_delgrp_key):
+                with st.container(border=True):
+                    st.warning(f"⚠️ 将删除 **{group_name}** 组内全部 **{len(items)}** 个方案，操作不可撤销！")
+                    _da1, _da2 = st.columns(2)
+                    _dadm_u = _da1.text_input("管理员用户名", key=f"dadmu_{_gkey}", placeholder="Username")
+                    _dadm_p = _da2.text_input("管理员密码", key=f"dadmp_{_gkey}", type="password", placeholder="Password")
+                    _dc1, _dc2, _dcpad = st.columns([1, 1, 4])
+                    with _dc1:
+                        if st.button("✅ 确认全部删除", key=f"gdel_ok_{_gkey}", type="primary", use_container_width=True):
+                            if _dadm_u == _DELETE_USER and _dadm_p == _DELETE_PWD:
+                                for _pid, _ in items:
+                                    delete_project(_pid)
+                                st.session_state.pop(_delgrp_key, None)
+                                st.rerun()
+                            else:
+                                st.error("用户名或密码错误")
+                    with _dc2:
+                        if st.button("取消", key=f"gdel_no_{_gkey}", use_container_width=True):
+                            st.session_state.pop(_delgrp_key, None)
+                            st.rerun()
 
             # 汇总对比表
             rows = []
