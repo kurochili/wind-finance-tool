@@ -60,6 +60,26 @@ def _sync_investment(inp: WindFarmFinancialInputs):
 # 1. 给定目标 IRR -> 反算上网电价
 # ════════════════════════════════════════════════════════════════════════════
 
+def _safe_brentq(objective, lo, hi, xtol=1e-6, expand=True):
+    """Wrapper around brentq with automatic range expansion on sign errors."""
+    try:
+        return brentq(objective, lo, hi, xtol=xtol)
+    except ValueError:
+        if not expand:
+            raise
+    for _ in range(5):
+        lo *= 0.5
+        hi *= 2.0
+        try:
+            return brentq(objective, lo, hi, xtol=xtol)
+        except ValueError:
+            continue
+    raise ValueError(
+        f"Cannot find solution in range [{lo:.4f}, {hi:.4f}]. "
+        f"f(lo)={objective(lo):.6f}, f(hi)={objective(hi):.6f}. "
+        "Check if the target is achievable with the given parameters.")
+
+
 def solve_tariff_for_target_irr(
     inputs: WindFarmFinancialInputs,
     target_irr: float,
@@ -78,7 +98,7 @@ def solve_tariff_for_target_irr(
         result = calculate(inp)
         return _get_irr(result, irr_type) - target_irr
 
-    return brentq(objective, tariff_range[0], tariff_range[1], xtol=1e-8)
+    return _safe_brentq(objective, tariff_range[0], tariff_range[1], xtol=1e-8)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -109,7 +129,7 @@ def solve_investment_for_target_lcoe(
         result = calculate(inp)
         return result.lcoe - target_lcoe
 
-    return brentq(objective, investment_range[0], investment_range[1], xtol=1e-6)
+    return _safe_brentq(objective, investment_range[0], investment_range[1])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -134,7 +154,7 @@ def solve_hours_for_target_irr(
         result = calculate(inp)
         return _get_irr(result, irr_type) - target_irr
 
-    return brentq(objective, float(hours_range[0]), float(hours_range[1]), xtol=1.0)
+    return _safe_brentq(objective, float(hours_range[0]), float(hours_range[1]), xtol=1.0)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -163,7 +183,7 @@ def solve_turbine_price_for_target_lcoe(
             inp.investment.unit_static_investment = inp.investment.offshore_detail.total_epc_per_kw
             result = calculate(inp)
             return result.lcoe - target_lcoe
-        return brentq(objective, price_range[0], price_range[1], xtol=1e-6)
+        return _safe_brentq(objective, price_range[0], price_range[1])
 
     elif inputs.investment.onshore_detail is not None:
         onshore = inputs.investment.onshore_detail
@@ -179,7 +199,7 @@ def solve_turbine_price_for_target_lcoe(
             inp.investment.unit_static_investment = inp.investment.onshore_detail.total_per_kw
             result = calculate(inp)
             return result.lcoe - target_lcoe
-        return brentq(objective, price_range[0], price_range[1], xtol=1e-6)
+        return _safe_brentq(objective, price_range[0], price_range[1])
 
     else:
         def objective(turbine_price: float) -> float:
@@ -188,7 +208,7 @@ def solve_turbine_price_for_target_lcoe(
             inp.investment.unit_static_investment = turbine_price + bop
             result = calculate(inp)
             return result.lcoe - target_lcoe
-        return brentq(objective, price_range[0], price_range[1], xtol=1e-6)
+        return _safe_brentq(objective, price_range[0], price_range[1])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -214,7 +234,7 @@ def solve_turbine_price_for_target_irr(
             inp.investment.unit_static_investment = inp.investment.offshore_detail.total_epc_per_kw
             result = calculate(inp)
             return _get_irr(result, irr_type) - target_irr
-        return brentq(objective, price_range[0], price_range[1], xtol=1e-6)
+        return _safe_brentq(objective, price_range[0], price_range[1])
 
     elif inputs.investment.onshore_detail is not None:
         onshore = inputs.investment.onshore_detail
@@ -230,7 +250,7 @@ def solve_turbine_price_for_target_irr(
             inp.investment.unit_static_investment = inp.investment.onshore_detail.total_per_kw
             result = calculate(inp)
             return _get_irr(result, irr_type) - target_irr
-        return brentq(objective, price_range[0], price_range[1], xtol=1e-6)
+        return _safe_brentq(objective, price_range[0], price_range[1])
 
     else:
         def objective(turbine_price: float) -> float:
@@ -239,7 +259,7 @@ def solve_turbine_price_for_target_irr(
             inp.investment.unit_static_investment = turbine_price + bop
             result = calculate(inp)
             return _get_irr(result, irr_type) - target_irr
-        return brentq(objective, price_range[0], price_range[1], xtol=1e-6)
+        return _safe_brentq(objective, price_range[0], price_range[1])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -258,7 +278,7 @@ def solve_tariff_for_zero_npv(
         result = calculate(inp)
         return _get_npv(result, npv_type)
 
-    return brentq(objective, tariff_range[0], tariff_range[1], xtol=1e-8)
+    return _safe_brentq(objective, tariff_range[0], tariff_range[1], xtol=1e-8)
 
 
 def solve_investment_for_zero_npv(
@@ -270,10 +290,17 @@ def solve_investment_for_zero_npv(
     def objective(unit_inv: float) -> float:
         inp = copy.deepcopy(inputs)
         inp.investment.unit_static_investment = unit_inv
+        if inp.investment.onshore_detail is not None:
+            ratio = unit_inv / max(inp.investment.onshore_detail.total_per_kw, 1)
+            inp.investment.onshore_detail.equipment_and_installation *= ratio
+            inp.investment.onshore_detail.civil_works *= ratio
+        if inp.investment.offshore_detail is not None:
+            ratio = unit_inv / max(inp.investment.offshore_detail.total_epc_per_kw, 1)
+            inp.investment.offshore_detail.oem.turbine_price_per_kw *= ratio
         result = calculate(inp)
         return _get_npv(result, npv_type)
 
-    return brentq(objective, investment_range[0], investment_range[1], xtol=1e-6)
+    return _safe_brentq(objective, investment_range[0], investment_range[1])
 
 
 def solve_hours_for_zero_npv(
@@ -288,4 +315,4 @@ def solve_hours_for_zero_npv(
         result = calculate(inp)
         return _get_npv(result, npv_type)
 
-    return brentq(objective, float(hours_range[0]), float(hours_range[1]), xtol=1.0)
+    return _safe_brentq(objective, float(hours_range[0]), float(hours_range[1]), xtol=1.0)
