@@ -2979,6 +2979,50 @@ def _irr_color(v: float) -> str:
     return "#C00000"
 
 
+def _diagnose_project(inp: WindFarmFinancialInputs, res: CalculationResult) -> list[tuple[str, str, str]]:
+    """Return list of (icon, message, severity) for result health check."""
+    diags: list[tuple[str, str, str]] = []
+    irr = res.project_irr_after_tax
+    eq = res.equity_irr
+    lcoe = res.lcoe
+    tariff = inp.tax_financial.tariff_with_tax
+    npv = res.project_npv_after_tax
+    payback = res.payback_after_tax
+    capex = inp.investment.resolve_unit_investment()
+
+    if irr < 0:
+        diags.append(("🔴", "全投IRR为负值，项目亏损", "error"))
+    elif irr < 0.04:
+        diags.append(("🟠", f"全投IRR仅{irr:.2%}，低于一般基准(6-8%)", "warning"))
+
+    if irr > 0.20:
+        diags.append(("🟡", f"全投IRR达{irr:.2%}，偏高 — 建议核查CAPEX和P90", "warning"))
+
+    if eq < 0:
+        diags.append(("🔴", f"资本金IRR为负({eq:.2%})，融资结构亏损", "error"))
+    elif eq > 0.35:
+        diags.append(("🟡", f"资本金IRR达{eq:.2%}，异常高 — 建议核查贷款利率/资本金比例", "warning"))
+
+    if eq < irr and eq > 0:
+        diags.append(("⚠️", "资本金IRR < 全投IRR，杠杆效应为负 — 贷款利率可能高于项目回报", "info"))
+
+    if lcoe > tariff > 0:
+        diags.append(("🔴", f"LCOE({lcoe:.4f}) > 电价({tariff:.4f})，度电亏损", "error"))
+
+    if npv < 0:
+        diags.append(("🟠", f"NPV为负({npv/1e6:,.1f}M$) — 折现率({inp.tax_financial.discount_rate:.0%})高于IRR", "info"))
+
+    if payback > 20:
+        diags.append(("🔴", f"回收期{payback:.1f}年，超过运营期 — 检查电价/投资", "error"))
+    elif payback > 15:
+        diags.append(("🟠", f"回收期{payback:.1f}年，偏长", "warning"))
+
+    if capex > 2500:
+        diags.append(("🟡", f"单位投资{capex:,.0f}$/kW偏高 — 核查EPC/BOP明细", "warning"))
+
+    return diags
+
+
 def _render_project_card(pid: str, proj: dict, best_irr: bool, best_lcoe: bool):
     """Render one project card inside a st.container with border."""
     inp: WindFarmFinancialInputs = proj["inputs"]
@@ -2993,6 +3037,16 @@ def _render_project_card(pid: str, proj: dict, best_irr: bool, best_lcoe: bool):
         elif best_lcoe:
             title_md += ' <span class="pm-best-tag pm-best-lcoe">Best LCOE</span>'
         st.markdown(title_md, unsafe_allow_html=True)
+
+        # 健康度诊断
+        diags = _diagnose_project(inp, res)
+        if diags:
+            _severity_order = {"error": 0, "warning": 1, "info": 2}
+            diags.sort(key=lambda d: _severity_order.get(d[2], 9))
+            _diag_lines = " / ".join(f"{d[0]} {d[1]}" for d in diags[:3])
+            _color = "#C00000" if diags[0][2] == "error" else "#BF8F00" if diags[0][2] == "warning" else "#666"
+            st.markdown(f'<div style="font-size:0.78rem;color:{_color};margin:-8px 0 6px 0">{_diag_lines}</div>',
+                        unsafe_allow_html=True)
 
         # KPI 指标
         k1, k2, k3, k4 = st.columns(4)
@@ -3053,6 +3107,138 @@ def _render_project_card(pid: str, proj: dict, best_irr: bool, best_lcoe: bool):
             with _db2:
                 if st.button("取消", key=f"cdel_n2_{pid}", use_container_width=True):
                     st.session_state.pop("confirm_delete", None)
+                    st.rerun()
+
+
+def _update_project_result(pid: str, proj: dict, new_inputs: WindFarmFinancialInputs):
+    """Recalculate and update a project in-place + sync to DB."""
+    new_result = calculate(new_inputs)
+    proj["inputs"] = copy.deepcopy(new_inputs)
+    proj["result"] = new_result
+    if _USE_DB:
+        try:
+            _db.db_save(pid, proj["name"], proj.get("group", ""),
+                        proj.get("country", ""), new_inputs,
+                        proj.get("saved_at", time.strftime("%Y-%m-%d %H:%M:%S")))
+        except Exception:
+            pass
+
+
+def _render_quick_edit(pid: str, proj: dict):
+    """Quick parameter edit panel for a single project."""
+    inp = proj["inputs"]
+    with st.expander("🔧 快速修参 & 重新计算", expanded=False):
+        st.caption("修改以下参数后点击「重新计算」，结果自动更新并同步到云端。")
+        _c1, _c2, _c3, _c4 = st.columns(4)
+        _new_p90 = _c1.number_input("P90 满负荷小时(h)", 500, 6000,
+                                     int(inp.basic.full_load_hours), step=10, key=f"qe_p90_{pid}")
+        _new_tariff = _c2.number_input("含税电价($/kWh)", 0.001, 0.50,
+                                        float(inp.tax_financial.tariff_with_tax), step=0.001,
+                                        format="%.4f", key=f"qe_tariff_{pid}")
+        _new_capex = _c3.number_input("单位投资($/kW)", 100.0, 5000.0,
+                                       float(inp.investment.resolve_unit_investment()), step=10.0,
+                                       format="%.0f", key=f"qe_capex_{pid}")
+        _new_disc = _c4.number_input("折现率(%)", 1.0, 20.0,
+                                      float(inp.tax_financial.discount_rate * 100), step=0.5,
+                                      format="%.1f", key=f"qe_disc_{pid}")
+
+        _fc1, _fc2, _fc3, _fc4 = st.columns(4)
+        _new_eq_ratio = _fc1.number_input("资本金比例(%)", 10.0, 100.0,
+                                           float(inp.financing.equity_ratio * 100), step=5.0,
+                                           format="%.0f", key=f"qe_eq_{pid}")
+        _new_loan_rate = _fc2.number_input("贷款利率(%)", 0.5, 15.0,
+                                            float(inp.financing.long_term_loan_rate * 100), step=0.1,
+                                            format="%.2f", key=f"qe_loan_{pid}")
+        _new_loss = _fc3.number_input("损耗率(%)", 0.0, 20.0,
+                                       float(inp.basic.loss_rate * 100), step=0.5,
+                                       format="%.1f", key=f"qe_loss_{pid}")
+        _new_tax = _fc4.number_input("所得税率(%)", 0.0, 40.0,
+                                      float(inp.tax_financial.income_tax_rate * 100), step=1.0,
+                                      format="%.0f", key=f"qe_itax_{pid}")
+
+        if st.button("🔄 重新计算此方案", key=f"qe_recalc_{pid}", type="primary"):
+            new_inp = copy.deepcopy(inp)
+            new_inp.basic.full_load_hours = _new_p90
+            new_inp.tax_financial.tariff_with_tax = _new_tariff
+            new_inp.investment.unit_static_investment = _new_capex
+            new_inp.tax_financial.discount_rate = _new_disc / 100.0
+            new_inp.financing.equity_ratio = _new_eq_ratio / 100.0
+            new_inp.financing.long_term_loan_rate = _new_loan_rate / 100.0
+            new_inp.basic.loss_rate = _new_loss / 100.0
+            new_inp.tax_financial.income_tax_rate = _new_tax / 100.0
+            if new_inp.investment.onshore_detail is not None:
+                _ratio = _new_capex / max(inp.investment.resolve_unit_investment(), 1)
+                new_inp.investment.onshore_detail.equipment_and_installation *= _ratio
+                new_inp.investment.onshore_detail.civil_works *= _ratio
+            if new_inp.investment.offshore_detail is not None:
+                _ratio = _new_capex / max(inp.investment.resolve_unit_investment(), 1)
+                new_inp.investment.offshore_detail.oem.turbine_price_per_kw *= _ratio
+            _update_project_result(pid, proj, new_inp)
+            st.success("已重新计算并保存！")
+            st.rerun()
+
+
+def _render_group_batch_edit(country: str, group_name: str, items: list):
+    """Batch edit shared parameters for an entire project group."""
+    _gkey = f"{country}__{group_name}"
+    _batch_key = f"batch_edit_{_gkey}"
+
+    if st.session_state.get(_batch_key):
+        with st.container(border=True):
+            st.markdown(f"**批量修参：{group_name}**（修改公共参数，所有 {len(items)} 个方案同时重算）")
+            st.caption("仅修改下方参数，各方案的机型/台数/P90等独有参数保持不变。")
+
+            _bc1, _bc2, _bc3, _bc4 = st.columns(4)
+            ref_inp = items[0][1]["inputs"]
+            _b_tariff = _bc1.number_input("含税电价($/kWh)", 0.001, 0.50,
+                                           float(ref_inp.tax_financial.tariff_with_tax), step=0.001,
+                                           format="%.4f", key=f"be_tariff_{_gkey}")
+            _b_disc = _bc2.number_input("折现率(%)", 1.0, 20.0,
+                                         float(ref_inp.tax_financial.discount_rate * 100), step=0.5,
+                                         format="%.1f", key=f"be_disc_{_gkey}")
+            _b_eq = _bc3.number_input("资本金比例(%)", 10.0, 100.0,
+                                       float(ref_inp.financing.equity_ratio * 100), step=5.0,
+                                       format="%.0f", key=f"be_eq_{_gkey}")
+            _b_loan = _bc4.number_input("贷款利率(%)", 0.5, 15.0,
+                                          float(ref_inp.financing.long_term_loan_rate * 100), step=0.1,
+                                          format="%.2f", key=f"be_loan_{_gkey}")
+
+            _bc5, _bc6, _bc7, _bc8 = st.columns(4)
+            _b_loss = _bc5.number_input("损耗率(%)", 0.0, 20.0,
+                                         float(ref_inp.basic.loss_rate * 100), step=0.5,
+                                         format="%.1f", key=f"be_loss_{_gkey}")
+            _b_itax = _bc6.number_input("所得税率(%)", 0.0, 40.0,
+                                          float(ref_inp.tax_financial.income_tax_rate * 100), step=1.0,
+                                          format="%.0f", key=f"be_itax_{_gkey}")
+            _b_vat = _bc7.number_input("增值税率(%)", 0.0, 20.0,
+                                        float(ref_inp.tax_financial.vat_rate * 100), step=1.0,
+                                        format="%.0f", key=f"be_vat_{_gkey}")
+            _b_opyrs = _bc8.number_input("运营期(年)", 15, 40,
+                                          int(ref_inp.operational.operation_years), step=1,
+                                          key=f"be_opyrs_{_gkey}")
+
+            _bb1, _bb2, _bbpad = st.columns([1, 1, 4])
+            with _bb1:
+                if st.button("🔄 批量重新计算", key=f"be_go_{_gkey}", type="primary", use_container_width=True):
+                    _count = 0
+                    for _pid, _proj in items:
+                        new_inp = copy.deepcopy(_proj["inputs"])
+                        new_inp.tax_financial.tariff_with_tax = _b_tariff
+                        new_inp.tax_financial.discount_rate = _b_disc / 100.0
+                        new_inp.financing.equity_ratio = _b_eq / 100.0
+                        new_inp.financing.long_term_loan_rate = _b_loan / 100.0
+                        new_inp.basic.loss_rate = _b_loss / 100.0
+                        new_inp.tax_financial.income_tax_rate = _b_itax / 100.0
+                        new_inp.tax_financial.vat_rate = _b_vat / 100.0
+                        new_inp.operational.operation_years = _b_opyrs
+                        _update_project_result(_pid, _proj, new_inp)
+                        _count += 1
+                    st.session_state.pop(_batch_key, None)
+                    st.success(f"已批量重算 {_count} 个方案！")
+                    st.rerun()
+            with _bb2:
+                if st.button("取消", key=f"be_cancel_{_gkey}", use_container_width=True):
+                    st.session_state.pop(_batch_key, None)
                     st.rerun()
 
 
@@ -3126,7 +3312,8 @@ def _render_project_list():
             _delgrp_key = f"delgroup_{_gkey}"
 
             # Group bar + 管理按钮
-            _gb_col, _gr_col, _gd_col = st.columns([7, 1, 1])
+            _batch_key = f"batch_edit_{_gkey}"
+            _gb_col, _ge_col, _gr_col, _gd_col = st.columns([6, 1, 1, 1])
             with _gb_col:
                 st.markdown(
                     f'<div class="pm-group-bar" style="margin-top:8px">'
@@ -3136,18 +3323,30 @@ def _render_project_list():
                     f'</div>',
                     unsafe_allow_html=True,
                 )
+            with _ge_col:
+                st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
+                if st.button("🔄 批量修参", key=f"gbatch_{_gkey}", use_container_width=True):
+                    st.session_state[_batch_key] = True
+                    st.session_state.pop(_rename_key, None)
+                    st.session_state.pop(_delgrp_key, None)
+                    st.rerun()
             with _gr_col:
                 st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
                 if st.button("✏️ 重命名", key=f"grename_{_gkey}", use_container_width=True):
                     st.session_state[_rename_key] = True
                     st.session_state.pop(_delgrp_key, None)
+                    st.session_state.pop(_batch_key, None)
                     st.rerun()
             with _gd_col:
                 st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
                 if st.button("🗑 删除组", key=f"gdelete_{_gkey}", use_container_width=True):
                     st.session_state[_delgrp_key] = True
                     st.session_state.pop(_rename_key, None)
+                    st.session_state.pop(_batch_key, None)
                     st.rerun()
+
+            # ── 批量修参 ──
+            _render_group_batch_edit(country, group_name, items)
 
             # ── 重命名表单 ──
             if st.session_state.get(_rename_key):
@@ -3440,6 +3639,21 @@ def main():
 
             st.markdown(f"## 📄 {dproj['name']}")
             st.caption(f"保存于 {dproj['saved_at']}")
+
+            # ── 健康诊断 ──
+            _detail_diags = _diagnose_project(dinp, dres)
+            if _detail_diags:
+                for _icon, _msg, _sev in _detail_diags:
+                    if _sev == "error":
+                        st.error(f"{_icon} {_msg}")
+                    elif _sev == "warning":
+                        st.warning(f"{_icon} {_msg}")
+                    else:
+                        st.info(f"{_icon} {_msg}")
+
+            # ── 快速修参 & 重新计算 ──
+            _render_quick_edit(dpid, dproj)
+
             render_full_assessment(dinp, dres, key_prefix=f"detail_{dpid}")
         else:
             _render_project_list()
