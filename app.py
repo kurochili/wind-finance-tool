@@ -68,6 +68,7 @@ from wind_finance.reverse_solver import (
     solve_turbine_price_for_target_irr,
 )
 from wind_finance import db as _db
+from wind_finance.tariff_data import get_tariff_references, get_tariff_display, get_all_tariff_summary
 
 # ════════════════════════════════════════════════════════════════════════════
 # 页面配置 & 全局样式
@@ -359,6 +360,182 @@ def _validate_smart_params(df: pd.DataFrame, tariff_default: float, is_offshore:
     return errors, warnings
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# 公共 O&M 参数渲染（三模式共用）
+# ════════════════════════════════════════════════════════════════════════════
+
+def _render_om_params(
+    key_prefix: str,
+    is_offshore: bool,
+    profile,
+    operation_years: int,
+    total_investment_usd: float = 0.0,
+    country_display: str = "",
+    compact: bool = False,
+    use_sidebar: bool = False,
+) -> dict:
+    """Render O&M parameter UI shared across Quick/Detailed/Smart Upload modes.
+
+    Returns dict with keys: om_method, warranty, post_warranty,
+    base_om_per_kw, om_escalation_rate, capex_om_percentage,
+    capex_om_escalation, contract_om_periods.
+    """
+    _st = st.sidebar if use_sidebar else st
+    om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
+    _rec = om_d.recommended_method
+    _opts_rev = {v: k for k, v in OM_METHOD_LABELS.items()}
+    _rec_label = OM_METHOD_LABELS.get(_rec, "Fixed Escalation")
+
+    if use_sidebar:
+        _st.markdown("---")
+        _st.markdown("### 🔄 运维计算方法")
+
+    om_display = _st.selectbox(
+        "O&M Algorithm",
+        list(OM_METHOD_LABELS.values()),
+        index=list(OM_METHOD_LABELS.keys()).index(_rec) if _rec in OM_METHOD_LABELS else 1,
+        key=f"{key_prefix}_om_sel",
+    )
+    om_method = _opts_rev[om_display]
+    _st.caption(f"🌏 {country_display} 推荐: **{_rec_label}**")
+    _st.caption(OM_METHOD_DESCRIPTIONS.get(om_method, ""))
+
+    _base_def = om_d.offshore_base_om if is_offshore else om_d.onshore_base_om
+    _esc_def = om_d.escalation_rate
+    _cpx_def = om_d.offshore_capex_pct if is_offshore else om_d.onshore_capex_pct
+
+    warranty_cost = WarrantyPeriodCost()
+    post_warranty_cost = PostWarrantyPeriodCost()
+    base_om = float(_base_def)
+    esc_rate = float(_esc_def)
+    cpx_pct = float(_cpx_def)
+    cpx_esc = 0.0
+    ct_periods = [(1, 5, 15.0), (6, 10, 22.0), (11, operation_years, 28.0)]
+
+    _k = key_prefix
+
+    if om_method == "chinese_feasibility":
+        _exp = _st.expander("🛡️ 质保期内运维 (USD/kW·年)", expanded=not compact)
+        with _exp:
+            wy = st.number_input("质保期 (年)", 0, 10, 5, key=f"{_k}_wy")
+            wm = st.number_input("材料费", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key=f"{_k}_wm")
+            wr = st.number_input("维修费", 0.0, 20.0, 0.0, step=0.1, key=f"{_k}_wr")
+            wo = st.number_input("其他费用", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key=f"{_k}_wo")
+            st.caption("⚪ 质保期成本由厂商承担大部分，对IRR影响较小。")
+        warranty_cost = WarrantyPeriodCost(
+            warranty_years=wy, material_cost_per_kw=wm,
+            repair_cost_per_kw=wr, other_cost_per_kw=wo,
+        )
+
+        _exp2 = _st.expander("🔧 质保期外运维 (投资%递增)", expanded=not compact)
+        with _exp2:
+            pw_major = st.checkbox("含大部件更换", value=True, key=f"{_k}_pw_major")
+            pw_mat = st.number_input("材料费 (USD/kW·年)", 0.0, 20.0,
+                                      4.23 if is_offshore else 2.82, step=0.1, key=f"{_k}_pwm")
+            pw_oth = st.number_input("其他费用 (USD/kW·年)", 0.0, 20.0,
+                                      4.23 if is_offshore else 2.82, step=0.1, key=f"{_k}_pwo")
+
+            st.markdown("**逐年维护费率（可逐行编辑）**")
+            st.caption("日常维护 + 大部件替换均以静态投资为基数（%/年）")
+
+            _stage_defs = [(1,5,0.5),(6,10,1.0),(11,15,1.5),(16,20,2.0),(21,25,2.5)]
+            _tbl_key = f"{_k}_om_yr_table"
+            _yrs_key = f"{_k}_om_yr_table_op_years"
+            if _tbl_key not in st.session_state or st.session_state.get(_yrs_key) != operation_years:
+                _rows = []
+                for _yr in range(1, operation_years + 1):
+                    _daily = 0.5
+                    for _s, _e, _r in _stage_defs:
+                        if _s <= _yr <= _e:
+                            _daily = _r
+                            break
+                    _rows.append({"年份": _yr, "日常维护(%)": _daily, "大部件替换(%)": 0.0})
+                st.session_state[_tbl_key] = pd.DataFrame(_rows)
+                st.session_state[_yrs_key] = operation_years
+
+            _om_edited = st.data_editor(
+                st.session_state[_tbl_key],
+                key=f"{_k}_om_yr_editor",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "年份": st.column_config.NumberColumn("年", disabled=True, width="small"),
+                    "日常维护(%)": st.column_config.NumberColumn("日常(%)", min_value=0.0, max_value=10.0, step=0.1, format="%.2f", width="small"),
+                    "大部件替换(%)": st.column_config.NumberColumn("大部件(%)", min_value=0.0, max_value=10.0, step=0.1, format="%.2f", width="small"),
+                },
+                num_rows="fixed",
+            )
+            st.session_state[_tbl_key] = _om_edited
+
+            if total_investment_usd > 0:
+                _preview = []
+                for _, _r in _om_edited.iterrows():
+                    _tr = (_r["日常维护(%)"] + _r["大部件替换(%)"]) / 100.0
+                    _ac = total_investment_usd * _tr / 10000
+                    _preview.append(f"Y{int(_r['年份'])}: {_r['日常维护(%)']:.2f}%+{_r['大部件替换(%)']:.2f}% = {_ac:,.1f} 万USD")
+                with st.expander("📊 逐年费用预览", expanded=False):
+                    for _line in _preview:
+                        st.caption(_line)
+
+            maint_rates = []
+            for _, _r in _om_edited.iterrows():
+                _yr = int(_r["年份"])
+                _tr = (_r["日常维护(%)"] + _r["大部件替换(%)"]) / 100.0
+                maint_rates.append((_yr, _yr, _tr))
+
+        post_warranty_cost = PostWarrantyPeriodCost(
+            includes_major_components=pw_major,
+            material_cost_per_kw=pw_mat,
+            other_cost_per_kw=pw_oth,
+            maintenance_rates=maint_rates,
+        )
+
+    elif om_method == "fixed_escalation":
+        _exp = _st.expander("📊 固定单价法参数", expanded=not compact)
+        with _exp:
+            base_om = st.number_input("基准O&M (USD/kW/年)", 5.0, 100.0,
+                                       float(_base_def), step=1.0, key=f"{_k}_fe_base")
+            esc_rate = st.number_input("年增长率 (%)", 0.0, 10.0,
+                                        float(_esc_def * 100), step=0.5, key=f"{_k}_fe_esc") / 100.0
+
+    elif om_method == "capex_percentage":
+        _exp = _st.expander("📊 投资百分比法参数", expanded=not compact)
+        with _exp:
+            cpx_pct = st.number_input("年运维费 (占CAPEX %)", 0.5, 10.0,
+                                       float(_cpx_def * 100), step=0.1, key=f"{_k}_cp_pct") / 100.0
+            cpx_esc = st.number_input("年增长率 (%)", 0.0, 10.0, 0.0,
+                                       step=0.5, key=f"{_k}_cp_esc") / 100.0
+
+    elif om_method == "contract":
+        _exp = _st.expander("📋 合同报价法 (分阶段$/kW)", expanded=not compact)
+        with _exp:
+            st.caption("自定义各阶段运维单价")
+            c1, c2, c3 = st.columns(3)
+            cs1 = c1.number_input("阶段1起", 1, 35, 1, key=f"{_k}_cs1")
+            ce1 = c2.number_input("阶段1止", 1, 35, 5, key=f"{_k}_ce1")
+            cv1 = c3.number_input("$/kW/年", 0.0, 200.0, 15.0, step=1.0, key=f"{_k}_cv1")
+            c1, c2, c3 = st.columns(3)
+            cs2 = c1.number_input("阶段2起", 1, 35, 6, key=f"{_k}_cs2")
+            ce2 = c2.number_input("阶段2止", 1, 35, 10, key=f"{_k}_ce2")
+            cv2 = c3.number_input("$/kW/年", 0.0, 200.0, 22.0, step=1.0, key=f"{_k}_cv2")
+            c1, c2, c3 = st.columns(3)
+            cs3 = c1.number_input("阶段3起", 1, 35, 11, key=f"{_k}_cs3")
+            ce3 = c2.number_input("阶段3止", 1, 35, operation_years, key=f"{_k}_ce3")
+            cv3 = c3.number_input("$/kW/年", 0.0, 200.0, 28.0, step=1.0, key=f"{_k}_cv3")
+            ct_periods = [(cs1, ce1, cv1), (cs2, ce2, cv2), (cs3, ce3, cv3)]
+
+    return {
+        "om_method": om_method,
+        "warranty": warranty_cost,
+        "post_warranty": post_warranty_cost,
+        "base_om_per_kw": base_om,
+        "om_escalation_rate": esc_rate,
+        "capex_om_percentage": cpx_pct,
+        "capex_om_escalation": cpx_esc,
+        "contract_om_periods": ct_periods,
+    }
+
+
 def smart_upload_panel():
     """上传 Excel 或图片，自动提取参数并批量计算多方案"""
     st.markdown("### 📤 智能上传")
@@ -473,50 +650,24 @@ def smart_upload_panel():
 
     with st.expander("⚙️ 公共参数调整", expanded=False):
         col1, col2, col3 = st.columns(3)
-        tariff_override = col1.number_input("电价(含税 USD/kWh)", 0.001, 0.500, 0.085, step=0.001, format="%.4f", key="su_tariff")
+        _su_tref = get_tariff_display(sel_country, "offshore" if is_offshore else "onshore")
+        _su_tariff_def = round((_su_tref.low + _su_tref.high) / 2, 4) if _su_tref and _su_tref.high > 0 else 0.085
+        tariff_override = col1.number_input("电价(含税 USD/kWh)", 0.001, 0.500, _su_tariff_def, step=0.001, format="%.4f", key="su_tariff")
         build_months = col2.number_input("建设期(月)", 6, 48, 24, key="su_build")
         oper_years = col3.number_input("运营期(年)", 15, 30, 25, key="su_oper")
         col4, col5, col6 = st.columns(3)
         eq_ratio = col4.number_input("资本金比例", 0.10, 0.80, eq_ratio, step=0.05, key="su_eq")
         loan_rate = col5.number_input("贷款利率", 0.01, 0.20, loan_rate, step=0.005, format="%.3f", key="su_lr")
         loan_term = col6.number_input("贷款期限(年)", 5, 25, loan_term, key="su_lt")
+        if _su_tref:
+            st.caption(f"📋 电价参考: {_su_tref.low:.4f}~{_su_tref.high:.4f} USD/kWh | {_su_tref.source} | {_su_tref.mechanism}")
 
-    # ── 运维算法选择（Smart Upload模式） ──
-    _su_om_def = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
-    _su_rec = _su_om_def.recommended_method
-    _su_om_opts = {v: k for k, v in OM_METHOD_LABELS.items()}
-    _su_rec_label = OM_METHOD_LABELS.get(_su_rec, "Fixed Escalation")
+    # ── 运维算法选择（Smart Upload模式 — 使用公共函数） ──
     with st.expander("🔧 运维算法选择", expanded=False):
-        _su_om_display = st.selectbox(
-            "O&M Algorithm",
-            list(OM_METHOD_LABELS.values()),
-            index=list(OM_METHOD_LABELS.keys()).index(_su_rec) if _su_rec in OM_METHOD_LABELS else 1,
-            key="su_om_method_sel",
+        _su_om = _render_om_params(
+            key_prefix="su", is_offshore=is_offshore, profile=profile,
+            operation_years=oper_years, country_display=sel_country, compact=True,
         )
-        _su_om_method_sel = _su_om_opts[_su_om_display]
-        st.caption(f"Recommended for {sel_country}: **{_su_rec_label}**")
-        st.caption(OM_METHOD_DESCRIPTIONS.get(_su_om_method_sel, ""))
-
-        _su_base_def = _su_om_def.offshore_base_om if is_offshore else _su_om_def.onshore_base_om
-        _su_esc_def2 = _su_om_def.escalation_rate
-        _su_cpx_def2 = _su_om_def.offshore_capex_pct if is_offshore else _su_om_def.onshore_capex_pct
-
-        _su_base_val = _su_base_def
-        _su_esc_val = _su_esc_def2
-        _su_cpx_val = _su_cpx_def2
-        _su_ct_periods = [(1,5,15.0),(6,10,22.0),(11,oper_years,28.0)]
-
-        if _su_om_method_sel == "fixed_escalation":
-            _su_base_val = st.number_input("Base O&M (USD/kW/yr)", 5.0, 100.0, float(_su_base_def), step=1.0, key="su_fe_base")
-            _su_esc_val = st.number_input("Annual escalation (%)", 0.0, 10.0, float(_su_esc_def2*100), step=0.5, key="su_fe_esc") / 100.0
-        elif _su_om_method_sel == "capex_percentage":
-            _su_cpx_val = st.number_input("Annual O&M (% of CAPEX)", 0.5, 10.0, float(_su_cpx_def2*100), step=0.1, key="su_cp_pct") / 100.0
-        elif _su_om_method_sel == "contract":
-            st.caption("Define cost by period (USD/kW/yr)")
-            _su_ct1 = st.number_input("Yr 1-5", 5.0, 100.0, 15.0, key="su_ct1")
-            _su_ct2 = st.number_input("Yr 6-10", 5.0, 100.0, 22.0, key="su_ct2")
-            _su_ct3 = st.number_input("Yr 11+", 5.0, 100.0, 28.0, key="su_ct3")
-            _su_ct_periods = [(1,5,_su_ct1),(6,10,_su_ct2),(11,oper_years,_su_ct3)]
 
     with st.expander("📝 项目概况 (选填，导出PPT时展示)", expanded=False):
         su_pi_loc = st.text_input("项目地点", value="", placeholder="如：越南河静省 (Ha Tinh Province)", key="su_pi_loc")
@@ -640,20 +791,18 @@ def smart_upload_panel():
                 equity_ratio=eq_ratio, long_term_loan_rate=loan_rate, loan_term_years=loan_term,
                 working_capital_loan_rate=loan_rate, working_capital_equity_ratio=eq_ratio,
             )
-            warranty = WarrantyPeriodCost(warranty_years=5, material_cost_per_kw=5.0, repair_cost_per_kw=0.0, other_cost_per_kw=8.0)
-            post_warranty = PostWarrantyPeriodCost(
-                includes_major_components=True, material_cost_per_kw=6.0, other_cost_per_kw=10.0,
-                maintenance_rates=[(1,5,0.005),(6,10,0.01),(11,15,0.015),(16,20,0.02),(21,25,0.025)],
-            )
             offshore_extra = OffshoreExtraCost(requires_sov=False, sea_area_usage_fee=43.0) if is_offshore else None
             operational = OperationalCost(
-                om_method=_su_om_method_sel,
+                om_method=_su_om["om_method"],
                 staff_count=35 if is_offshore else 15, salary_per_person=3.5 if is_offshore else 1.0,
                 welfare_rate=0.40, insurance_rate=0.0035, depreciation_years=20, residual_rate=0.0,
-                operation_years=oper_years, warranty=warranty, post_warranty=post_warranty,
-                base_om_per_kw=_su_base_val, om_escalation_rate=_su_esc_val,
-                capex_om_percentage=_su_cpx_val,
-                contract_om_periods=_su_ct_periods,
+                operation_years=oper_years,
+                warranty=_su_om["warranty"], post_warranty=_su_om["post_warranty"],
+                base_om_per_kw=_su_om["base_om_per_kw"],
+                om_escalation_rate=_su_om["om_escalation_rate"],
+                capex_om_percentage=_su_om["capex_om_percentage"],
+                capex_om_escalation=_su_om["capex_om_escalation"],
+                contract_om_periods=_su_om["contract_om_periods"],
                 offshore_extra=offshore_extra,
             )
             tax_financial = TaxAndFinancial(
@@ -743,6 +892,9 @@ def sidebar_inputs_quick() -> WindFarmFinancialInputs:
     full_load_hours = st.sidebar.number_input("P90 Hours (h/yr)", 1000, 5000, D("p90"), step=10, key="q_p90")
     tariff = st.sidebar.number_input("Tariff incl. tax (USD/kWh)", 0.001, 0.500, D("tariff"),
                                      step=0.001, format="%.4f", key="q_tariff")
+    _q_tref = get_tariff_display(country_name, "offshore" if is_offshore else "onshore")
+    if _q_tref:
+        st.sidebar.caption(f"📋 参考: {_q_tref.low:.4f}~{_q_tref.high:.4f} USD/kWh ({_q_tref.source})")
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Investment")
@@ -773,50 +925,13 @@ def sidebar_inputs_quick() -> WindFarmFinancialInputs:
     else:
         tax_holiday = (1, 3, 0.0, 4, 6, cit / 2.0)
 
-    # ── 运维算法选择（Quick模式也可切换） ──
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### O&M Method")
-    _om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
-    _q_rec = _om_d.recommended_method
-    _q_om_opts = {v: k for k, v in OM_METHOD_LABELS.items()}
-    _q_rec_label = OM_METHOD_LABELS.get(_q_rec, "Fixed Escalation")
-    _q_om_display = st.sidebar.selectbox(
-        "O&M Algorithm",
-        list(OM_METHOD_LABELS.values()),
-        index=list(OM_METHOD_LABELS.keys()).index(_q_rec) if _q_rec in OM_METHOD_LABELS else 1,
-        key="q_om_method_sel",
+    # ── 运维算法选择（Quick模式 — 使用公共函数） ──
+    _q_om = _render_om_params(
+        key_prefix="q", is_offshore=is_offshore, profile=profile,
+        operation_years=operation_years,
+        total_investment_usd=total_per_kw * num_turbines * turbine_mw * 1000,
+        country_display=selected_display, compact=True, use_sidebar=True,
     )
-    _q_om_method_sel = _q_om_opts[_q_om_display]
-    st.sidebar.caption(f"Recommended for {selected_display}: **{_q_rec_label}**")
-    st.sidebar.caption(OM_METHOD_DESCRIPTIONS.get(_q_om_method_sel, ""))
-
-    _q_base_om_def = _om_d.offshore_base_om if is_offshore else _om_d.onshore_base_om
-    _q_esc_def = _om_d.escalation_rate
-    _q_cpx_def = _om_d.offshore_capex_pct if is_offshore else _om_d.onshore_capex_pct
-
-    _q_c1, _q_c2, _q_c3 = 15.0, 22.0, 28.0
-    _q_cpx_val = _q_cpx_def
-    if _q_om_method_sel == "fixed_escalation":
-        with st.sidebar.expander("O&M Params (Fixed Escalation)", expanded=False):
-            _q_base_om_val = st.number_input("Base O&M (USD/kW/yr)", 5.0, 100.0, float(_q_base_om_def), step=1.0, key="q_fe_base")
-            _q_esc_val = st.number_input("Annual escalation (%)", 0.0, 10.0, float(_q_esc_def * 100), step=0.5, key="q_fe_esc") / 100.0
-    elif _q_om_method_sel == "capex_percentage":
-        with st.sidebar.expander("O&M Params (CAPEX %)", expanded=False):
-            _q_cpx_val = st.number_input("Annual O&M (% of CAPEX)", 0.5, 10.0, float(_q_cpx_def * 100), step=0.1, key="q_cp_pct") / 100.0
-            _q_base_om_val = _q_base_om_def
-            _q_esc_val = _q_esc_def
-    elif _q_om_method_sel == "contract":
-        with st.sidebar.expander("O&M Params (Contract)", expanded=False):
-            st.caption("Define cost by period (USD/kW/yr)")
-            _q_c1 = st.number_input("Yr 1-5", 5.0, 100.0, 15.0, key="q_ct1")
-            _q_c2 = st.number_input("Yr 6-10", 5.0, 100.0, 22.0, key="q_ct2")
-            _q_c3 = st.number_input("Yr 11+", 5.0, 100.0, 28.0, key="q_ct3")
-            _q_base_om_val = _q_base_om_def
-            _q_esc_val = _q_esc_def
-    else:
-        pass
-        _q_base_om_val = _q_base_om_def
-        _q_esc_val = _q_esc_def
 
     # 显示自动填充的默认值
     with st.sidebar.expander("Auto-filled defaults (view only)", expanded=False):
@@ -874,26 +989,17 @@ def sidebar_inputs_quick() -> WindFarmFinancialInputs:
         working_capital_loan_rate=loan_rate,
         working_capital_equity_ratio=eq_ratio,
     )
-    warranty = WarrantyPeriodCost(
-        warranty_years=5, material_cost_per_kw=D("w_mat"),
-        repair_cost_per_kw=0.0, other_cost_per_kw=D("w_other"),
-    )
-    post_warranty = PostWarrantyPeriodCost(
-        includes_major_components=True,
-        material_cost_per_kw=D("pw_mat"), other_cost_per_kw=D("pw_other"),
-        maintenance_rates=[(1,5,0.005),(6,10,0.01),(11,15,0.015),(16,20,0.02),(21,25,0.025)],
-    )
-    _q_cpx_final = _q_cpx_val if _q_om_method_sel == "capex_percentage" else (_q_cpx_def)
-    _q_contract_periods = [(1,5,_q_c1),(6,10,_q_c2),(11,operation_years,_q_c3)] if _q_om_method_sel == "contract" else [(1,5,15.0),(6,10,20.0),(11,25,25.0)]
     operational = OperationalCost(
-        om_method=_q_om_method_sel,
+        om_method=_q_om["om_method"],
         staff_count=D("staff"), salary_per_person=D("salary"), welfare_rate=0.40,
         insurance_rate=D("insurance"), depreciation_years=20, residual_rate=0.0,
-        operation_years=operation_years, warranty=warranty,
-        post_warranty=post_warranty,
-        base_om_per_kw=_q_base_om_val, om_escalation_rate=_q_esc_val,
-        capex_om_percentage=_q_cpx_final,
-        contract_om_periods=_q_contract_periods,
+        operation_years=operation_years,
+        warranty=_q_om["warranty"], post_warranty=_q_om["post_warranty"],
+        base_om_per_kw=_q_om["base_om_per_kw"],
+        om_escalation_rate=_q_om["om_escalation_rate"],
+        capex_om_percentage=_q_om["capex_om_percentage"],
+        capex_om_escalation=_q_om["capex_om_escalation"],
+        contract_om_periods=_q_om["contract_om_periods"],
         offshore_extra=offshore_extra,
     )
     tax_financial = TaxAndFinancial(
@@ -1073,16 +1179,23 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
         default_tariff = 0.0638 if is_offshore else 0.0434
 
     tariff = st.sidebar.number_input("含税电价 (USD/kWh)", 0.001, 0.500, default_tariff, step=0.001, format="%.4f")
-    _tariff_policy = getattr(profile, 'offshore_tariff_policy', '') if is_offshore else getattr(profile, 'onshore_tariff_policy', '')
-    _tariff_mech = getattr(profile, 'tariff_mechanism', '')
-    if _tariff_policy:
-        with st.sidebar.expander(f"📋 {selected_display} {'海上' if is_offshore else '陆上'}电价政策", expanded=False):
+    _tariff_ref = get_tariff_display(country_name, "offshore" if is_offshore else "onshore")
+    _tariff_policy = _tariff_ref.policy_text if _tariff_ref else ""
+    _tariff_mech = _tariff_ref.mechanism if _tariff_ref else ""
+    _tariff_src = _tariff_ref.source if _tariff_ref else ""
+    _ref_lo = _tariff_ref.low if _tariff_ref else _tariff_range[0]
+    _ref_hi = _tariff_ref.high if _tariff_ref else _tariff_range[1]
+    if _tariff_ref or _tariff_policy:
+        with st.sidebar.expander(f"📋 {selected_display} {'海上' if is_offshore else '陆上'}电价参考", expanded=False):
             if _tariff_mech:
                 st.markdown(f"**Mechanism**: {_tariff_mech}")
-            st.markdown(f"**Range**: {_tariff_range[0]:.4f} ~ {_tariff_range[1]:.4f} USD/kWh")
-            st.markdown(f"**Policy**: {_tariff_policy}")
+            st.markdown(f"**Range**: {_ref_lo:.4f} ~ {_ref_hi:.4f} USD/kWh")
+            if _tariff_src:
+                st.caption(f"数据来源: {_tariff_src}")
+            if _tariff_policy:
+                st.markdown(f"**Policy**: {_tariff_policy}")
     if _sens_help:
-        st.sidebar.caption(f"⚡⚡ **最高敏感** | ±0.01$/kWh ≈ IRR±1~2pp。{selected_display}参考: {'海上' if is_offshore else '陆上'} {_tariff_range[0]:.4f}~{_tariff_range[1]:.4f} USD/kWh")
+        st.sidebar.caption(f"⚡⚡ **最高敏感** | ±0.01$/kWh ≈ IRR±1~2pp。{selected_display}参考: {'海上' if is_offshore else '陆上'} {_ref_lo:.4f}~{_ref_hi:.4f} USD/kWh")
     vat_rate = st.sidebar.number_input("增值税率 (%)", 0.0, 20.0, default_vat, step=1.0) / 100.0
     vat_refund = st.sidebar.number_input("即征即退比例 (%)", 0.0, 100.0, 50.0 if country_name == "China" else 0.0, step=5.0) / 100.0
     income_tax_rate = st.sidebar.number_input("所得税率 (%)", 0.0, 35.0, default_cit, step=1.0) / 100.0
@@ -1138,172 +1251,13 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
         if _sens_help:
             st.caption("⚪ 人员和保险为固定成本，占运维总额10~25%。对IRR影响有限（<0.1pp），但影响LCOE约1~3厘/kWh。")
 
-    # ── 运维算法选择 ──
-    st.sidebar.markdown("---")
-    om_d = getattr(profile, 'om_defaults', None) or CountryOMDefaults()
-    _rec_method = om_d.recommended_method
-
-    om_method_options = {v: k for k, v in OM_METHOD_LABELS.items()}
-    _rec_label = OM_METHOD_LABELS.get(_rec_method, "固定单价法 ($/kW + 年增长率)")
-    om_method_display = st.sidebar.selectbox(
-        "🔄 运维计算方法",
-        list(OM_METHOD_LABELS.values()),
-        index=list(OM_METHOD_LABELS.keys()).index(_rec_method) if _rec_method in OM_METHOD_LABELS else 1,
-        key="om_method_sel",
+    # ── 运维算法选择（Detailed模式 — 使用公共函数） ──
+    _d_om = _render_om_params(
+        key_prefix="detail", is_offshore=is_offshore, profile=profile,
+        operation_years=operation_years,
+        total_investment_usd=unit_investment * num_turbines * turbine_mw * 1000,
+        country_display=selected_display, compact=False, use_sidebar=True,
     )
-    om_method = om_method_options[om_method_display]
-    st.sidebar.caption(f"🌏 {selected_display} 推荐: **{_rec_label}**")
-    if _sens_help:
-        st.sidebar.info(OM_METHOD_DESCRIPTIONS.get(om_method, ""))
-        if om_d.rationale:
-            st.sidebar.caption(f"📖 推荐理由: {om_d.rationale}")
-        if om_d.sources:
-            st.sidebar.caption(f"📚 数据来源: {om_d.sources}")
-
-    # ── 根据算法显示不同输入 ──
-    warranty_cost = WarrantyPeriodCost()
-    post_warranty_cost = PostWarrantyPeriodCost()
-    base_om_per_kw = 25.0
-    om_escalation_rate = 0.02
-    capex_om_percentage = 0.02
-    capex_om_escalation = 0.0
-    contract_om_periods = [(1, 5, 15.0), (6, 10, 20.0), (11, 25, 25.0)]
-
-    if om_method == "chinese_feasibility":
-        with st.sidebar.expander("🛡️ 质保期内运维 (USD/kW·年)", expanded=False):
-            warranty_years = st.number_input("质保期 (年)", 0, 10, 5, key="wy")
-            w_material = st.number_input("材料费", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="wm")
-            w_repair = st.number_input("维修费", 0.0, 20.0, 0.0, step=0.1, key="wr")
-            w_other = st.number_input("其他费用", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="wo")
-            if _sens_help:
-                st.caption("⚪ 质保期成本由厂商承担大部分，对IRR影响较小。典型海上4~8$/kW，陆上3~6$/kW。")
-        warranty_cost = WarrantyPeriodCost(
-            warranty_years=warranty_years,
-            material_cost_per_kw=w_material,
-            repair_cost_per_kw=w_repair,
-            other_cost_per_kw=w_other,
-        )
-
-        with st.sidebar.expander("🔧 质保期外运维 (投资%递增)", expanded=False):
-            pw_major = st.checkbox("含大部件更换", value=True, key="pw_major")
-            pw_material = st.number_input("材料费 (USD/kW·年)", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="pwm")
-            pw_other = st.number_input("其他费用 (USD/kW·年)", 0.0, 20.0, 4.23 if is_offshore else 2.82, step=0.1, key="pwo")
-
-            st.markdown("**逐年维护费率（可逐行编辑）**")
-            st.caption("日常维护 + 大部件替换均以静态投资为基数（%/年），总额 = 两者之和 × 静态总投资")
-
-            # 构建默认逐年费率表（与同事系统一致）
-            _stage_defs = [(1,5,0.5), (6,10,1.0), (11,15,1.5), (16,20,2.0), (21,25,2.5)]
-            _total_cap_musd = unit_investment * num_turbines * turbine_mw * 1000  # USD
-            if "om_yr_table" not in st.session_state or st.session_state.get("om_yr_table_op_years") != operation_years:
-                _rows = []
-                for _yr in range(1, operation_years + 1):
-                    _daily = 0.5
-                    for _s, _e, _r in _stage_defs:
-                        if _s <= _yr <= _e:
-                            _daily = _r
-                            break
-                    _rows.append({"年份": _yr, "日常维护(%)": _daily, "大部件替换(%)": 0.0})
-                st.session_state["om_yr_table"] = pd.DataFrame(_rows)
-                st.session_state["om_yr_table_op_years"] = operation_years
-
-            _om_edited = st.data_editor(
-                st.session_state["om_yr_table"],
-                key="om_yr_editor",
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "年份": st.column_config.NumberColumn("年", disabled=True, width="small"),
-                    "日常维护(%)": st.column_config.NumberColumn("日常(%)", min_value=0.0, max_value=10.0, step=0.1, format="%.2f", width="small"),
-                    "大部件替换(%)": st.column_config.NumberColumn("大部件(%)", min_value=0.0, max_value=10.0, step=0.1, format="%.2f", width="small"),
-                },
-                num_rows="fixed",
-            )
-            # 同步回 session_state
-            st.session_state["om_yr_table"] = _om_edited
-
-            # 计算逐年总额预览（万USD，参考用）
-            _preview_rows = []
-            for _, _r in _om_edited.iterrows():
-                _total_rate = (_r["日常维护(%)"] + _r["大部件替换(%)"]) / 100.0
-                _annual_cost = _total_cap_musd * _total_rate / 10000  # 万USD
-                _preview_rows.append(f"Y{int(_r['年份'])}: {_r['日常维护(%)']:.2f}%+{_r['大部件替换(%)']:.2f}% = {_annual_cost:,.1f} 万USD")
-
-            with st.expander("📊 逐年费用预览", expanded=False):
-                for _line in _preview_rows:
-                    st.caption(_line)
-
-            # 转换为 maintenance_rates（每年独立一个区间）
-            maint_rates = []
-            for _, _r in _om_edited.iterrows():
-                _yr = int(_r["年份"])
-                _total_rate = (_r["日常维护(%)"] + _r["大部件替换(%)"]) / 100.0
-                maint_rates.append((_yr, _yr, _total_rate))
-
-            if _sens_help:
-                st.caption("⚡ **高敏感** | 维修费率是运维成本最大变量。1%→2%费率变化可导致IRR波动0.3~0.8pp。")
-                st.warning("⚠️ 此方法适用于中国国内项目。海外项目建议切换为'固定单价法'或'合同报价法'。")
-        post_warranty_cost = PostWarrantyPeriodCost(
-            includes_major_components=pw_major,
-            material_cost_per_kw=pw_material,
-            other_cost_per_kw=pw_other,
-            maintenance_rates=maint_rates,
-        )
-
-    elif om_method == "fixed_escalation":
-        with st.sidebar.expander("📊 固定单价法参数", expanded=True):
-            _def_base = om_d.offshore_base_om if is_offshore else om_d.onshore_base_om
-            _def_esc = om_d.escalation_rate
-            base_om_per_kw = st.number_input(
-                "基准O&M (USD/kW/年)", 5.0, 100.0, float(_def_base), step=1.0, key="fe_base",
-                help="不含人员/保险/SOV/海域金，仅维修+材料+其他"
-            )
-            om_escalation_rate = st.number_input(
-                "年增长率 (%)", 0.0, 10.0, float(_def_esc * 100), step=0.5, key="fe_esc"
-            ) / 100.0
-            if _sens_help:
-                yr10_om = base_om_per_kw * (1 + om_escalation_rate) ** 9
-                yr20_om = base_om_per_kw * (1 + om_escalation_rate) ** 19
-                st.caption(f"⚡ **高敏感** | 基准单价±5$/kW ≈ IRR±0.2~0.5pp。第10年: {yr10_om:.1f} $/kW, 第20年: {yr20_om:.1f} $/kW")
-                st.caption(f"📖 {selected_display}参考: 陆上 {om_d.onshore_base_om:.0f} $/kW, 海上 {om_d.offshore_base_om:.0f} $/kW (BNEF)")
-
-    elif om_method == "capex_percentage":
-        with st.sidebar.expander("📊 投资百分比法参数", expanded=True):
-            _def_pct = om_d.offshore_capex_pct if is_offshore else om_d.onshore_capex_pct
-            capex_om_percentage = st.number_input(
-                "年运维费 (占CAPEX %)", 0.5, 10.0, float(_def_pct * 100), step=0.1, key="cp_pct"
-            ) / 100.0
-            capex_om_escalation = st.number_input(
-                "年增长率 (%)", 0.0, 10.0, 0.0, step=0.5, key="cp_esc"
-            ) / 100.0
-            if _sens_help:
-                st.caption(f"⚡ **高敏感** | ±0.5%CAPEX ≈ IRR±0.3~0.6pp。行业参考: 陆上1.2~2.0%, 海上2.0~3.5% (IRENA 2023)")
-                st.caption(f"📖 {selected_display}参考: 陆上 {om_d.onshore_capex_pct*100:.1f}%, 海上 {om_d.offshore_capex_pct*100:.1f}%")
-
-    elif om_method == "contract":
-        with st.sidebar.expander("📋 合同报价法 (分阶段$/kW)", expanded=True):
-            st.markdown("自定义各阶段运维单价 (不含人员/保险/海上专项)")
-            c1, c2, c3 = st.columns(3)
-            ct_s1 = c1.number_input("阶段1起(年)", 1, 35, 1, key="ct_s1")
-            ct_e1 = c2.number_input("阶段1止(年)", 1, 35, 5, key="ct_e1")
-            ct_v1 = c3.number_input("$/kW/年", 0.0, 200.0, 15.0, step=1.0, key="ct_v1")
-            c1, c2, c3 = st.columns(3)
-            ct_s2 = c1.number_input("阶段2起(年)", 1, 35, 6, key="ct_s2")
-            ct_e2 = c2.number_input("阶段2止(年)", 1, 35, 10, key="ct_e2")
-            ct_v2 = c3.number_input("$/kW/年", 0.0, 200.0, 20.0, step=1.0, key="ct_v2")
-            c1, c2, c3 = st.columns(3)
-            ct_s3 = c1.number_input("阶段3起(年)", 1, 35, 11, key="ct_s3")
-            ct_e3 = c2.number_input("阶段3止(年)", 1, 35, 25, key="ct_e3")
-            ct_v3 = c3.number_input("$/kW/年", 0.0, 200.0, 25.0, step=1.0, key="ct_v3")
-            contract_om_periods = [
-                (ct_s1, ct_e1, ct_v1),
-                (ct_s2, ct_e2, ct_v2),
-                (ct_s3, ct_e3, ct_v3),
-            ]
-            if _sens_help:
-                avg_om = sum(v * (e - s + 1) for s, e, v in contract_om_periods) / max(1, sum(e - s + 1 for s, e, _ in contract_om_periods))
-                st.caption(f"⚡ **高敏感** | 加权平均 {avg_om:.1f} $/kW/年。±5$/kW ≈ IRR±0.2~0.5pp")
-                st.caption("📖 最精确的方法。如有厂商或第三方O&M合同报价，直接输入即可。")
 
     # ──── 海上专项 ────
     offshore_extra = None
@@ -1352,7 +1306,7 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
     )
 
     operational = OperationalCost(
-        om_method=om_method,
+        om_method=_d_om["om_method"],
         staff_count=staff_count,
         salary_per_person=salary_per_person,
         welfare_rate=welfare_rate,
@@ -1360,13 +1314,13 @@ def sidebar_inputs() -> WindFarmFinancialInputs:
         depreciation_years=depreciation_years,
         residual_rate=residual_rate,
         operation_years=operation_years,
-        warranty=warranty_cost,
-        post_warranty=post_warranty_cost,
-        base_om_per_kw=base_om_per_kw,
-        om_escalation_rate=om_escalation_rate,
-        capex_om_percentage=capex_om_percentage,
-        capex_om_escalation=capex_om_escalation,
-        contract_om_periods=contract_om_periods,
+        warranty=_d_om["warranty"],
+        post_warranty=_d_om["post_warranty"],
+        base_om_per_kw=_d_om["base_om_per_kw"],
+        om_escalation_rate=_d_om["om_escalation_rate"],
+        capex_om_percentage=_d_om["capex_om_percentage"],
+        capex_om_escalation=_d_om["capex_om_escalation"],
+        contract_om_periods=_d_om["contract_om_periods"],
         offshore_extra=offshore_extra,
     )
 
@@ -2475,6 +2429,23 @@ def render_market_overview():
     )
     if selected_name:
         _render_country_detail_card(country_options[selected_name])
+
+    st.markdown("---")
+
+    # ─── 电价对比表 ───
+    st.subheader("⚡ 各国电价参考对比")
+    _tariff_rows = get_all_tariff_summary()
+    if _tariff_rows:
+        _tdf = pd.DataFrame(_tariff_rows)
+        _tdf_display = _tdf.rename(columns={
+            "country_cn": "国家", "onshore_low": "陆上下限", "onshore_high": "陆上上限",
+            "offshore_low": "海上下限", "offshore_high": "海上上限",
+            "onshore_source": "陆上来源", "offshore_source": "海上来源", "mechanism": "定价机制",
+        })[["国家", "陆上下限", "陆上上限", "海上下限", "海上上限", "定价机制", "陆上来源"]]
+        st.dataframe(_tdf_display, use_container_width=True, hide_index=True)
+        st.caption("单位: USD/kWh | 数据自动更新（IRENA优先，静态数据兜底）")
+    else:
+        st.info("暂无电价数据")
 
     st.markdown("---")
 
